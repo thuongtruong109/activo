@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <g id="grid" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1.2"/><rect x="14" y="3.5" width="6.5" height="6.5" rx="1.2"/><rect x="3.5" y="14" width="6.5" height="6.5" rx="1.2"/><rect x="14" y="14" width="6.5" height="6.5" rx="1.2"/>
+  </g>
+  <g id="plus" fill="none" stroke="#9db0c1" stroke-width="2" stroke-linecap="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M12 5v14M5 12h14"/>
+  </g>
+  <g id="plus-dark" fill="none" stroke="#02131c" stroke-width="2.1" stroke-linecap="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M12 5v14M5 12h14"/>
+  </g>
+  <g id="key" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><circle cx="8" cy="12" r="4"/><path d="M12 12h8M17 12v3M20 12v2"/>
+  </g>
+  <g id="cloud" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M6.5 18.5h11a4 4 0 0 0 .7-7.94A6.2 6.2 0 0 0 6.35 8.7 4.9 4.9 0 0 0 6.5 18.5Z"/>
+  </g>
+  <g id="database" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6M4.5 11.5v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6"/>
+  </g>
+  <g id="settings" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 1.55V21h-4v-.05A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3v-4h.05A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06L7.06 4.2l.06.06A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3.05V3h4v.05A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.55 1H21v4h-.05A1.7 1.7 0 0 0 19.4 15Z"/>
+  </g>
+  <g id="folder-project" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M3.5 6.5h6l2 2h9v10h-17z"/><circle cx="16.5" cy="13.5" r="1.7"/><path d="M13.7 17c.7-1.15 1.62-1.75 2.8-1.75S18.6 15.85 19.3 17"/>
+  </g>
+  <g id="chevron-right" fill="none" stroke="#6e8294" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="m9 5 7 7-7 7"/>
+  </g>
+  <g id="search" fill="none" stroke="#6f8293" stroke-width="1.8" stroke-linecap="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>
+  </g>
+  <g id="close" fill="none" stroke="#8293a2" stroke-width="1.9" stroke-linecap="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="m7 7 10 10M17 7 7 17"/>
+  </g>
+  <g id="total" fill="none" stroke="#25bdea" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M9 6h11M9 12h11M9 18h11"/><rect x="3.5" y="4.5" width="2.5" height="2.5" rx=".5"/><rect x="3.5" y="10.5" width="2.5" height="2.5" rx=".5"/><rect x="3.5" y="16.5" width="2.5" height="2.5" rx=".5"/>
+  </g>
+  <g id="check" fill="none" stroke="#32d296" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><circle cx="12" cy="12" r="8.5"/><path d="m8 12.2 2.6 2.6L16.5 9"/>
+  </g>
+  <g id="clock" fill="none" stroke="#f4bc42" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/>
+  </g>
+  <g id="alert" fill="none" stroke="#f05d6c" stroke-width="1.9" stroke-linecap="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v6"/><path d="M12 17.2h.01" stroke-width="2.8"/>
+  </g>
+  <g id="edit" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M4 20h4l11-11-4-4L4 16zM13.5 6.5l4 4"/>
+  </g>
+  <g id="trash" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/>
+  </g>
+  <g id="eye" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M2.8 12s3.4-6 9.2-6 9.2 6 9.2 6-3.4 6-9.2 6-9.2-6-9.2-6Z"/><circle cx="12" cy="12" r="2.7"/>
+  </g>
+  <g id="download" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M12 3v11M8 10l4 4 4-4M4 18v2h16v-2"/>
+  </g>
+  <g id="upload" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M12 15V4M8 8l4-4 4 4M4 18v2h16v-2"/>
+  </g>
+  <g id="format" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="m14 4 6 6-9 9H5v-6zM12 6l6 6M4 20h16"/>
+  </g>
+  <g id="plug" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M8 3v5M16 3v5M6 8h12v2a6 6 0 0 1-6 6v5M9 21h6"/>
+  </g>
+  <g id="external" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M13 5H5v14h14v-8M14 4h6v6M20 4l-9 9"/>
+  </g>
+  <g id="folder" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M3.5 6.5h6l2 2h9v10h-17z"/>
+  </g>
+  <g id="import" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M13 3H6v18h12V8zM13 3v5h5M3 13h10M9 9l4 4-4 4"/>
+  </g>
+  <g id="migration" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M4 8h13M14 5l3 3-3 3M20 16H7M10 13l-3 3 3 3"/>
+  </g>
+  <g id="export" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M13 3H6v18h12V8zM13 3v5h5M11 13h10M17 9l4 4-4 4"/>
+  </g>
+  <g id="copy" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>
+  </g>
+  <g id="info" fill="none" stroke="#49c8f0" stroke-width="1.9" stroke-linecap="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><circle cx="12" cy="12" r="8.5"/><path d="M12 11v6M12 7h.01" stroke-width="2.5"/>
+  </g>
+  <g id="toast-success" fill="none" stroke="#43dfa1" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><circle cx="12" cy="12" r="9"/><path d="m7.5 12.2 2.8 2.8 6.3-6.3"/>
+  </g>
+  <g id="toast-info" fill="none" stroke="#49c8f0" stroke-width="1.9" stroke-linecap="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01" stroke-width="2.5"/>
+  </g>
+  <g id="table" fill="none" stroke="#7f93a5" stroke-width="1.7" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M3.5 9.5h17M9 4.5v15M15 4.5v15"/>
+  </g>
+</svg>

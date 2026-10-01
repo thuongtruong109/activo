@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from license_admin.icons import icon_pixmap
+
 
 class Toast(QFrame):
     """A reusable bottom-right notification that never blocks interaction."""
@@ -26,8 +28,10 @@ class Toast(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 9, 12, 9)
         layout.setSpacing(8)
-        self._icon = QLabel("✓")
+        self._icon = QLabel()
         self._icon.setObjectName("toastIcon")
+        self._icon.setFixedSize(18, 18)
+        self._icon.setPixmap(icon_pixmap("toast-success", 18))
         self._message = QLabel()
         self._message.setObjectName("toastMessage")
         self._message.setWordWrap(True)
@@ -58,7 +62,9 @@ class Toast(QFrame):
         self._animation.stop()
         self._hiding = False
         self.setProperty("tone", tone)
-        self._icon.setText("✓" if tone == "success" else "i")
+        self._icon.setPixmap(
+            icon_pixmap("toast-success" if tone == "success" else "toast-info", 18)
+        )
         self._message.setText(message)
         self.style().unpolish(self)
         self.style().polish(self)

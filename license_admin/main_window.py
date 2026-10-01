@@ -8,10 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QItemSelection, QSettings, Qt, QUrl
+from PySide6.QtCore import QItemSelection, QSettings, QSize, Qt, QUrl
 from PySide6.QtGui import (
     QAction,
-    QActionGroup,
     QCloseEvent,
     QDesktopServices,
     QIcon,
@@ -43,6 +42,12 @@ from license_admin.dialogs import (
     RecordDetailsDialog,
     SettingsDialog,
 )
+from license_admin.dashboard_widgets import (
+    MetricCard,
+    ProjectIdentityCard,
+    SidebarButton,
+    SidebarMenuButton,
+)
 from license_admin.domain import (
     LicenseRecord,
     LicenseStatus,
@@ -52,30 +57,15 @@ from license_admin.domain import (
     validate_record_signatures,
 )
 from license_admin.google_sheets import GoogleSheetsClient, download_public_records
+from license_admin.icons import icon_pixmap, svg_icon
 from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.settings import APPLICATION_ROOT, AdminSettings, ProjectStore
 from license_admin.storage import LicenseRepository
 from license_admin.toast import Toast
+from license_admin.theme import ADMIN_STYLESHEET
 from license_admin.worker import OperationThread
 from migrate_license_csv import migrate_legacy_csv
-class MetricCard(QFrame):
-    def __init__(self, title: str, color: str) -> None:
-        super().__init__()
-        self.setObjectName("metricCard")
-        self.setStyleSheet(f"QLabel#metricValue {{ color: {color}; }}")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(2)
-        title_label = QLabel(title)
-        title_label.setObjectName("metricTitle")
-        self.value_label = QLabel("0")
-        self.value_label.setObjectName("metricValue")
-        layout.addWidget(title_label)
-        layout.addWidget(self.value_label)
-
-    def set_value(self, value: int) -> None:
-        self.value_label.setText(str(value))
 
 
 class LicenseAdminWindow(QMainWindow):
@@ -115,120 +105,291 @@ class LicenseAdminWindow(QMainWindow):
         self._refresh_view()
 
     def _create_actions(self) -> None:
-        self.new_action = QAction("Tạo license", self)
+        self.new_action = QAction(svg_icon("plus"), "Tạo license", self)
         self.new_action.setShortcut("Ctrl+N")
         self.new_action.triggered.connect(self._add_license)
-        self.edit_action = QAction("Gia hạn / sửa", self)
+        self.edit_action = QAction(svg_icon("edit"), "Gia hạn / sửa", self)
         self.edit_action.setShortcut("Ctrl+E")
         self.edit_action.triggered.connect(self._edit_license)
-        self.revoke_action = QAction("Thu hồi", self)
+        self.revoke_action = QAction(svg_icon("trash"), "Thu hồi", self)
         self.revoke_action.setShortcut("Delete")
         self.revoke_action.triggered.connect(self._revoke_license)
-        self.details_action = QAction("Xem chi tiết", self)
+        self.details_action = QAction(svg_icon("eye"), "Xem chi tiết", self)
         self.details_action.triggered.connect(self._show_details)
-        self.pull_action = QAction("Tải từ Sheet", self)
+        self.pull_action = QAction(svg_icon("download"), "Tải từ Sheet", self)
         self.pull_action.setShortcut("Ctrl+Shift+D")
         self.pull_action.triggered.connect(self._pull_sheet)
-        self.push_action = QAction("Đồng bộ lên Sheet", self)
+        self.push_action = QAction(svg_icon("upload"), "Đồng bộ lên Sheet", self)
         self.push_action.setShortcut("Ctrl+Shift+U")
         self.push_action.triggered.connect(self._push_sheet)
-        self.format_action = QAction("Format Sheet", self)
+        self.format_action = QAction(svg_icon("format"), "Format Sheet", self)
         self.format_action.triggered.connect(self._format_sheet)
-        self.test_action = QAction("Kiểm tra kết nối", self)
+        self.test_action = QAction(svg_icon("plug"), "Kiểm tra kết nối", self)
         self.test_action.triggered.connect(self._test_connection)
-        self.open_sheet_action = QAction("Mở Google Sheet", self)
+        self.open_sheet_action = QAction(svg_icon("external"), "Mở Google Sheet", self)
         self.open_sheet_action.triggered.connect(self._open_sheet)
-        self.settings_action = QAction("Cài đặt", self)
+        self.settings_action = QAction(svg_icon("settings"), "Cài đặt", self)
         self.settings_action.setShortcut("Ctrl+,")
         self.settings_action.triggered.connect(self._show_settings)
-        self.new_project_action = QAction("Thêm dự án…", self)
+        self.new_project_action = QAction(svg_icon("plus"), "Thêm dự án…", self)
         self.new_project_action.triggered.connect(self._create_project)
-        self.open_project_folder_action = QAction("Mở thư mục dự án", self)
+        self.open_project_folder_action = QAction(
+            svg_icon("folder"), "Mở thư mục dự án", self
+        )
         self.open_project_folder_action.triggered.connect(self._open_project_folder)
-        self.import_project_keys_action = QAction("Nhập cặp key…", self)
+        self.import_project_keys_action = QAction(
+            svg_icon("key"), "Nhập cặp key…", self
+        )
         self.import_project_keys_action.triggered.connect(self._import_project_keys)
-        self.import_signed_action = QAction("Nhập signed CSV…", self)
+        self.import_signed_action = QAction(
+            svg_icon("import"), "Nhập signed CSV…", self
+        )
         self.import_signed_action.triggered.connect(self._import_signed)
-        self.import_legacy_action = QAction("Nhập legacy CSV…", self)
+        self.import_legacy_action = QAction(
+            svg_icon("migration"), "Nhập legacy CSV…", self
+        )
         self.import_legacy_action.triggered.connect(self._import_legacy)
-        self.export_action = QAction("Xuất signed CSV…", self)
+        self.export_action = QAction(svg_icon("export"), "Xuất signed CSV…", self)
         self.export_action.setShortcut("Ctrl+S")
         self.export_action.triggered.connect(self._export_signed)
-        self.quit_action = QAction("Thoát", self)
+        self.quit_action = QAction(svg_icon("close"), "Thoát", self)
         self.quit_action.setShortcut("Ctrl+Q")
         self.quit_action.triggered.connect(self.close)
 
     def _build_ui(self) -> None:
         central = QWidget()
-        root = QVBoxLayout(central)
-        root.setContentsMargins(10, 8, 10, 8)
-        root.setSpacing(8)
+        central.setObjectName("appShell")
+        shell = QHBoxLayout(central)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
 
-        cards = QHBoxLayout()
-        cards.setSpacing(8)
-        self.total_card = MetricCard("TỔNG LICENSE", "#fafafa")
-        self.active_card = MetricCard("ĐANG HOẠT ĐỘNG", "#22c55e")
-        self.expiring_card = MetricCard("SẮP HẾT HẠN", "#f59e0b")
-        self.expired_card = MetricCard("HẾT HẠN / LỖI", "#ef4444")
-        for card in (
-            self.total_card,
-            self.active_card,
-            self.expiring_card,
-            self.expired_card,
+        self.sidebar = QFrame()
+        self.sidebar.setObjectName("sidebar")
+        self.sidebar.setFixedWidth(220)
+        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(10, 0, 10, 12)
+        sidebar_layout.setSpacing(5)
+
+        brand = QFrame()
+        brand.setObjectName("brandBlock")
+        brand.setFixedHeight(72)
+        brand_layout = QHBoxLayout(brand)
+        brand_layout.setContentsMargins(2, 12, 2, 12)
+        brand_layout.setSpacing(10)
+        brand_mark = QLabel("L")
+        brand_mark.setObjectName("brandMark")
+        brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand_mark.setFixedSize(40, 40)
+        brand_copy = QVBoxLayout()
+        brand_copy.setSpacing(1)
+        brand_name = QLabel("LICENSE ADMIN")
+        brand_name.setObjectName("brandName")
+        brand_subtitle = QLabel("MULTI-PROJECT CONSOLE")
+        brand_subtitle.setObjectName("brandSubtitle")
+        brand_copy.addWidget(brand_name)
+        brand_copy.addWidget(brand_subtitle)
+        brand_layout.addWidget(brand_mark)
+        brand_layout.addLayout(brand_copy, 1)
+        sidebar_layout.addWidget(brand)
+
+        nav_label = QLabel("ĐIỀU HƯỚNG")
+        nav_label.setObjectName("navSection")
+        sidebar_layout.addWidget(nav_label)
+        self.overview_button = SidebarButton("Tổng quan", "grid", active=True)
+        self.overview_button.clicked.connect(self._focus_dashboard)
+        self.new_sidebar_button = SidebarButton("Tạo license", "plus")
+        self.new_sidebar_button.clicked.connect(self.new_action.trigger)
+        self.license_sidebar_menu = SidebarMenuButton("License", "key")
+        self.sheet_sidebar_menu = SidebarMenuButton("Google Sheets", "cloud")
+        self.data_sidebar_menu = SidebarMenuButton("Dữ liệu", "database")
+        self.settings_sidebar_button = SidebarButton("Cài đặt", "settings")
+        self.settings_sidebar_button.clicked.connect(self.settings_action.trigger)
+        for button in (
+            self.overview_button,
+            self.new_sidebar_button,
+            self.license_sidebar_menu,
+            self.sheet_sidebar_menu,
+            self.data_sidebar_menu,
+            self.settings_sidebar_button,
         ):
-            cards.addWidget(card)
-        root.addLayout(cards)
+            sidebar_layout.addWidget(button)
+        sidebar_layout.addStretch(1)
+
+        project_label = QLabel("PROJECT HIỆN TẠI")
+        project_label.setObjectName("navSection")
+        sidebar_layout.addWidget(project_label)
+        self.project_identity = ProjectIdentityCard()
+        self.project_identity.set_project(
+            self._settings.project_name,
+            self._settings.project_id,
+        )
+        sidebar_layout.addWidget(self.project_identity)
+        self.project_sidebar_menu = SidebarMenuButton(
+            "Quản lý project", "folder-project"
+        )
+        sidebar_layout.addWidget(self.project_sidebar_menu)
+        shell.addWidget(self.sidebar)
+
+        self.main_surface = QWidget()
+        self.main_surface.setObjectName("mainSurface")
+        main_layout = QVBoxLayout(self.main_surface)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        self.top_bar = QFrame()
+        self.top_bar.setObjectName("topBar")
+        self.top_bar.setFixedHeight(58)
+        top_bar_layout = QHBoxLayout(self.top_bar)
+        top_bar_layout.setContentsMargins(20, 9, 18, 9)
+        top_bar_layout.setSpacing(12)
+        top_bar_icon = QLabel()
+        top_bar_icon.setPixmap(icon_pixmap("grid", 17))
+        top_bar_icon.setFixedSize(17, 17)
+        top_bar_layout.addWidget(top_bar_icon)
+        top_bar_title = QLabel("Dashboard")
+        top_bar_title.setObjectName("topBarTitle")
+        top_bar_layout.addWidget(top_bar_title)
+        top_bar_layout.addSpacing(10)
 
         self.top_controls = QWidget()
         self.top_controls.setObjectName("topControls")
-        self.top_controls.setMinimumWidth(480)
-        self.top_controls.setMaximumWidth(700)
         self.top_controls.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Preferred,
         )
         filters = QHBoxLayout(self.top_controls)
-        filters.setContentsMargins(4, 2, 4, 2)
-        filters.setSpacing(8)
+        filters.setContentsMargins(0, 0, 0, 0)
+        filters.setSpacing(10)
         self.search_edit = QLineEdit()
+        self.search_edit.setObjectName("dashboardSearch")
         self.search_edit.setPlaceholderText("Tìm theo người dùng, HWID, JTI hoặc token…")
-        self.search_edit.setClearButtonEnabled(True)
-        self.search_edit.setMinimumWidth(170)
+        self._search_icon_action = self.search_edit.addAction(
+            svg_icon("search", 16), QLineEdit.ActionPosition.LeadingPosition
+        )
+        self._search_clear_action = self.search_edit.addAction(
+            svg_icon("close", 16), QLineEdit.ActionPosition.TrailingPosition
+        )
+        self._search_clear_action.setVisible(False)
+        self._search_clear_action.triggered.connect(self.search_edit.clear)
+        self.search_edit.setMinimumWidth(160)
+        self.search_edit.setMaximumWidth(520)
         self.search_edit.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
         self.status_combo = QComboBox()
-        self.status_combo.setMinimumWidth(128)
+        self.status_combo.setMinimumWidth(124)
         self.status_combo.addItem("Tất cả trạng thái", None)
         self.status_combo.addItem("Đang hoạt động", LicenseStatus.ACTIVE)
         self.status_combo.addItem("Sắp hết hạn", LicenseStatus.EXPIRING)
         self.status_combo.addItem("Đã hết hạn", LicenseStatus.EXPIRED)
         self.status_combo.addItem("Chưa hiệu lực", LicenseStatus.FUTURE)
         self.status_combo.addItem("Dữ liệu lỗi", LicenseStatus.INVALID)
+        self.project_combo = QComboBox()
+        self.project_combo.setObjectName("projectCombo")
+        self.project_combo.setMinimumWidth(130)
+        self.project_combo.setMaximumWidth(190)
+        filters.addWidget(self.search_edit, 1)
+        filters.addWidget(self.status_combo)
+        filters.addWidget(self.project_combo)
+        top_bar_layout.addWidget(self.top_controls, 1)
+        self.primary_action_button = QPushButton("Tạo license")
+        self.primary_action_button.setObjectName("primaryButton")
+        self.primary_action_button.setFixedWidth(128)
+        self.primary_action_button.setIcon(svg_icon("plus-dark"))
+        self.primary_action_button.setIconSize(QSize(16, 16))
+        self.primary_action_button.clicked.connect(self.new_action.trigger)
+        top_bar_layout.addWidget(
+            self.primary_action_button,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
+        main_layout.addWidget(self.top_bar)
+
+        self.content_surface = QWidget()
+        self.content_surface.setObjectName("contentSurface")
+        root = QVBoxLayout(self.content_surface)
+        root.setContentsMargins(18, 14, 18, 18)
+        root.setSpacing(12)
+
+        self.metrics_layout = QHBoxLayout()
+        self.metrics_layout.setSpacing(10)
+        self.total_card = MetricCard(
+            "Tổng license",
+            "Trong profile hiện tại",
+            "total",
+            "#25bdea",
+        )
+        self.active_card = MetricCard(
+            "Đang hoạt động",
+            "License còn hiệu lực",
+            "check",
+            "#32d296",
+        )
+        self.expiring_card = MetricCard(
+            "Sắp hết hạn",
+            "Còn tối đa 30 ngày",
+            "clock",
+            "#f4bc42",
+        )
+        self.expired_card = MetricCard(
+            "Hết hạn / lỗi",
+            "Cần kiểm tra hoặc cấp lại",
+            "alert",
+            "#f05d6c",
+        )
+        self.metric_cards = (
+            self.total_card,
+            self.active_card,
+            self.expiring_card,
+            self.expired_card,
+        )
+        for card in self.metric_cards:
+            self.metrics_layout.addWidget(card, 1)
+        root.addLayout(self.metrics_layout)
+
+        self.table_panel = QFrame()
+        self.table_panel.setObjectName("tablePanel")
+        table_panel_layout = QVBoxLayout(self.table_panel)
+        table_panel_layout.setContentsMargins(1, 0, 1, 1)
+        table_panel_layout.setSpacing(0)
+        table_header = QWidget()
+        table_header_layout = QHBoxLayout(table_header)
+        table_header_layout.setContentsMargins(14, 10, 12, 10)
+        table_header_layout.setSpacing(9)
+        table_icon = QLabel()
+        table_icon.setPixmap(icon_pixmap("table", 17))
+        table_icon.setFixedSize(17, 17)
+        table_header_layout.addWidget(
+            table_icon,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
+        table_copy = QVBoxLayout()
+        table_copy.setSpacing(1)
+        table_title = QLabel("Danh sách license")
+        table_title.setObjectName("panelTitle")
+        table_subtitle = QLabel("Double-click một dòng để gia hạn hoặc chỉnh sửa")
+        table_subtitle.setObjectName("panelSubtitle")
+        table_copy.addWidget(table_title)
+        table_copy.addWidget(table_subtitle)
+        table_header_layout.addLayout(table_copy)
+        table_header_layout.addStretch(1)
         self.visible_label = QLabel()
         self.visible_label.setObjectName("muted")
-        self.visible_label.setMinimumWidth(84)
-        self.visible_label.setSizePolicy(
-            QSizePolicy.Policy.Maximum,
-            QSizePolicy.Policy.Fixed,
-        )
+        table_header_layout.addWidget(self.visible_label)
         self.sync_badge = QLabel("Chưa đồng bộ")
         self.sync_badge.setObjectName("syncBadge")
-        self.sync_badge.setMinimumWidth(102)
-        self.sync_badge.setMaximumWidth(128)
+        self.sync_badge.setMinimumWidth(96)
+        self.sync_badge.setMaximumWidth(126)
         self.sync_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sync_badge.setSizePolicy(
             QSizePolicy.Policy.Fixed,
             QSizePolicy.Policy.Fixed,
         )
-        filters.addWidget(self.search_edit, 1)
-        filters.addWidget(self.status_combo)
-        filters.addWidget(self.visible_label)
-        filters.addWidget(
+        table_header_layout.addWidget(
             self.sync_badge,
             alignment=Qt.AlignmentFlag.AlignVCenter,
         )
+        table_panel_layout.addWidget(table_header)
 
         self.table_model = LicenseTableModel()
         self.proxy_model = LicenseFilterModel()
@@ -243,7 +404,7 @@ class LicenseAdminWindow(QMainWindow):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
         self.table.doubleClicked.connect(lambda _index: self._edit_license())
-        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setMinimumSectionSize(80)
         self.table.verticalHeader().setVisible(True)
         self.table.verticalHeader().setDefaultSectionSize(32)
@@ -256,69 +417,113 @@ class LicenseAdminWindow(QMainWindow):
         self.table.setColumnWidth(4, 90)
         self.table.setColumnWidth(5, 145)
         self.table.setColumnWidth(6, 240)
-        root.addWidget(self.table, 1)
+        table_panel_layout.addWidget(self.table, 1)
+        root.addWidget(self.table_panel, 1)
+        main_layout.addWidget(self.content_surface, 1)
+        shell.addWidget(self.main_surface, 1)
 
         self.search_edit.textChanged.connect(self.proxy_model.set_query)
+        self.search_edit.textChanged.connect(
+            lambda text: self._search_clear_action.setVisible(bool(text))
+        )
         self.search_edit.textChanged.connect(lambda _text: self._refresh_visible_count())
         self.status_combo.currentIndexChanged.connect(self._filter_status_changed)
         self.proxy_model.rowsInserted.connect(lambda *_args: self._refresh_visible_count())
         self.proxy_model.rowsRemoved.connect(lambda *_args: self._refresh_visible_count())
         self.proxy_model.modelReset.connect(self._refresh_visible_count)
         self.table.selectionModel().selectionChanged.connect(self._selection_changed)
+        self.project_combo.currentIndexChanged.connect(self._project_combo_changed)
         self.setCentralWidget(central)
         self.toast = Toast(self)
         self.statusBar().hide()
         self._selection_changed()
 
     def _create_menus(self) -> None:
-        self.project_menu = self.menuBar().addMenu("Dự án")
+        self.menuBar().hide()
+        self.project_menu = QMenu("Dự án", self)
         self._rebuild_project_menu()
-        file_menu = self.menuBar().addMenu("File")
-        file_menu.addAction(self.import_signed_action)
-        file_menu.addAction(self.import_legacy_action)
-        file_menu.addAction(self.export_action)
-        file_menu.addSeparator()
-        file_menu.addAction(self.quit_action)
-        license_menu = self.menuBar().addMenu("License")
-        license_menu.addAction(self.new_action)
-        license_menu.addAction(self.edit_action)
-        license_menu.addAction(self.revoke_action)
-        license_menu.addAction(self.details_action)
-        sheet_menu = self.menuBar().addMenu("Google Sheets")
-        sheet_menu.addAction(self.pull_action)
-        sheet_menu.addAction(self.push_action)
-        sheet_menu.addAction(self.format_action)
-        sheet_menu.addAction(self.test_action)
-        sheet_menu.addSeparator()
-        sheet_menu.addAction(self.open_sheet_action)
-        self.menuBar().setCornerWidget(
-            self.top_controls,
-            Qt.Corner.TopRightCorner,
+        self.file_menu = QMenu("Dữ liệu", self)
+        self.file_menu.addAction(self.import_signed_action)
+        self.file_menu.addAction(self.import_legacy_action)
+        self.file_menu.addAction(self.export_action)
+        self.license_menu = QMenu("License", self)
+        self.license_menu.addAction(self.new_action)
+        self.license_menu.addAction(self.edit_action)
+        self.license_menu.addAction(self.revoke_action)
+        self.license_menu.addAction(self.details_action)
+        self.sheet_menu = QMenu("Google Sheets", self)
+        self.sheet_menu.addAction(self.pull_action)
+        self.sheet_menu.addAction(self.push_action)
+        self.sheet_menu.addAction(self.format_action)
+        self.sheet_menu.addAction(self.test_action)
+        self.sheet_menu.addSeparator()
+        self.sheet_menu.addAction(self.open_sheet_action)
+        self.project_sidebar_menu.setMenu(self.project_menu)
+        self.data_sidebar_menu.setMenu(self.file_menu)
+        self.license_sidebar_menu.setMenu(self.license_menu)
+        self.sheet_sidebar_menu.setMenu(self.sheet_menu)
+        self.addActions(
+            (
+                self.new_action,
+                self.edit_action,
+                self.revoke_action,
+                self.pull_action,
+                self.push_action,
+                self.export_action,
+                self.settings_action,
+                self.quit_action,
+            )
         )
 
     def _set_project_identity(self) -> None:
         self.setWindowTitle(f"{self._settings.project_name} — License Admin")
+        if hasattr(self, "project_identity"):
+            self.project_identity.set_project(
+                self._settings.project_name,
+                self._settings.project_id,
+            )
 
     def _rebuild_project_menu(self) -> None:
         self.project_menu.clear()
-        self._project_action_group = QActionGroup(self)
-        self._project_action_group.setExclusive(True)
-        for profile in self._project_store.list_profiles():
+        profiles = self._project_store.list_profiles()
+        for profile in profiles:
             action = self.project_menu.addAction(profile.project_name)
-            action.setCheckable(True)
-            action.setChecked(profile.project_id == self._settings.project_id)
+            action.setIcon(
+                svg_icon(
+                    "check"
+                    if profile.project_id == self._settings.project_id
+                    else "folder-project"
+                )
+            )
             action.setData(profile.project_id)
             action.triggered.connect(
                 lambda _checked=False, project_id=profile.project_id: (
                     self._switch_project(project_id)
                 )
             )
-            self._project_action_group.addAction(action)
         self.project_menu.addSeparator()
         self.project_menu.addAction(self.new_project_action)
         self.project_menu.addAction(self.import_project_keys_action)
         self.project_menu.addAction(self.open_project_folder_action)
         self.project_menu.addAction(self.settings_action)
+        self.project_combo.blockSignals(True)
+        self.project_combo.clear()
+        active_index = 0
+        for index, profile in enumerate(profiles):
+            self.project_combo.addItem(profile.project_name, profile.project_id)
+            if profile.project_id == self._settings.project_id:
+                active_index = index
+        self.project_combo.setCurrentIndex(active_index)
+        self.project_combo.blockSignals(False)
+        self._set_project_identity()
+
+    def _project_combo_changed(self, index: int) -> None:
+        project_id = self.project_combo.itemData(index)
+        if isinstance(project_id, str):
+            self._switch_project(project_id)
+
+    def _focus_dashboard(self) -> None:
+        self.search_edit.setFocus()
 
     def _create_project(self) -> None:
         project_name, accepted = QInputDialog.getText(
@@ -393,16 +598,6 @@ class LicenseAdminWindow(QMainWindow):
             f"{imported.info.key_size} bit (SHA-256 {imported.info.short_fingerprint}…)"
         )
 
-    def _resize_top_controls(self) -> None:
-        menu = self.menuBar()
-        action_rects = [menu.actionGeometry(action) for action in menu.actions()]
-        navigation_right = max(
-            (rect.right() for rect in action_rects if rect.isValid()),
-            default=0,
-        )
-        available = menu.width() - navigation_right - 12
-        self.top_controls.setFixedWidth(max(480, min(700, available)))
-
     def _load_local(self, *, show_missing: bool) -> None:
         try:
             self._records = self._verified_records(
@@ -442,12 +637,14 @@ class LicenseAdminWindow(QMainWindow):
     def _refresh_view(self) -> None:
         self.table_model.set_records(self._records)
         statuses = [record.status() for record in self._records]
+        active_count = statuses.count(LicenseStatus.ACTIVE)
+        expiring_count = statuses.count(LicenseStatus.EXPIRING)
+        expired_count = statuses.count(LicenseStatus.EXPIRED)
+        invalid_count = statuses.count(LicenseStatus.INVALID)
         self.total_card.set_value(len(self._records))
-        self.active_card.set_value(statuses.count(LicenseStatus.ACTIVE))
-        self.expiring_card.set_value(statuses.count(LicenseStatus.EXPIRING))
-        self.expired_card.set_value(
-            statuses.count(LicenseStatus.EXPIRED) + statuses.count(LicenseStatus.INVALID)
-        )
+        self.active_card.set_value(active_count)
+        self.expiring_card.set_value(expiring_count)
+        self.expired_card.set_value(expired_count + invalid_count)
         self._refresh_visible_count()
         self._selection_changed()
 
@@ -910,6 +1107,8 @@ class LicenseAdminWindow(QMainWindow):
             self.import_project_keys_action,
         ):
             action.setEnabled(not busy)
+        self.project_combo.setEnabled(not busy)
+        self.primary_action_button.setEnabled(not busy)
         self.table.setEnabled(not busy)
         if busy:
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -941,8 +1140,6 @@ class LicenseAdminWindow(QMainWindow):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        if hasattr(self, "top_controls"):
-            self._resize_top_controls()
         if hasattr(self, "toast"):
             self.toast.reposition()
 
@@ -957,109 +1154,3 @@ class LicenseAdminWindow(QMainWindow):
             event.ignore()
             return
         event.accept()
-
-
-ADMIN_STYLESHEET = """
-QWidget {
-    background: #111113;
-    color: #f4f4f5;
-    font-family: "Segoe UI";
-    font-size: 13px;
-}
-QMainWindow, QDialog { background: #111113; }
-QMenuBar { background: #18181b; border-bottom: 1px solid #27272a; }
-QMenuBar::item { padding: 7px 11px; background: transparent; }
-QMenuBar::item:selected, QMenu::item:selected { background: #3f3f46; }
-QWidget#topControls { background: transparent; }
-QWidget#topControls QLineEdit, QWidget#topControls QComboBox {
-    min-height: 18px;
-    padding: 3px 7px;
-}
-QMenu { background: #18181b; border: 1px solid #3f3f46; padding: 5px; }
-QMenu::item { padding: 7px 26px 7px 10px; border-radius: 4px; }
-QLabel#muted { color: #a1a1aa; }
-QLabel#warning { color: #fbbf24; }
-QLabel#danger { color: #f87171; }
-QFrame#metricCard { background: #18181b; border: 1px solid #27272a; border-radius: 8px; }
-QLabel#metricTitle { color: #a1a1aa; font-size: 11px; font-weight: 600; }
-QLabel#metricValue { font-size: 22px; font-weight: 700; }
-QLabel#syncBadge {
-    background: #27272a; color: #fbbf24; border: 1px solid #3f3f46;
-    border-radius: 10px; padding: 3px 8px; font-size: 11px; font-weight: 600;
-}
-QLabel#syncBadge[synced="true"] { background: #052e16; color: #4ade80; border-color: #166534; }
-QPushButton {
-    background: #27272a; color: #fafafa; border: 1px solid #3f3f46;
-    border-radius: 6px; padding: 5px 10px; min-height: 21px;
-}
-QPushButton:hover { background: #3f3f46; border-color: #52525b; }
-QPushButton:disabled { color: #52525b; background: #18181b; }
-QLineEdit, QComboBox, QDateEdit, QTextEdit {
-    background: #18181b; color: #fafafa; border: 1px solid #3f3f46;
-    border-radius: 6px; padding: 5px 8px; min-height: 21px;
-}
-QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QTextEdit:focus { border-color: #f97316; }
-QLineEdit QToolButton {
-    background: transparent;
-    border: 0;
-    padding: 0;
-    margin: 0 2px 0 0;
-    min-width: 16px;
-    min-height: 16px;
-    max-width: 16px;
-    max-height: 16px;
-}
-QComboBox QAbstractItemView { background: #27272a; color: #fafafa; selection-background-color: #52525b; }
-QTableView {
-    background: #18181b; alternate-background-color: #202023; color: #f4f4f5;
-    border: 1px solid #27272a; border-radius: 8px; gridline-color: #27272a;
-    selection-background-color: #3f3f46; selection-color: #ffffff;
-}
-QTableView::item { padding: 5px; }
-QHeaderView::section {
-    background: #09090b; color: #a1a1aa; border: 0; border-bottom: 1px solid #3f3f46;
-    padding: 6px; font-size: 11px; font-weight: 700;
-}
-QHeaderView::section:vertical {
-    border-right: 1px solid #3f3f46;
-    color: #71717a;
-}
-QScrollBar:vertical {
-    background: transparent;
-    width: 10px;
-    margin: 3px 2px;
-}
-QScrollBar::handle:vertical {
-    background: #3f3f46;
-    border-radius: 4px;
-    min-height: 32px;
-}
-QScrollBar::handle:vertical:hover { background: #52525b; }
-QScrollBar:horizontal {
-    background: transparent;
-    height: 10px;
-    margin: 2px 3px;
-}
-QScrollBar::handle:horizontal {
-    background: #3f3f46;
-    border-radius: 4px;
-    min-width: 32px;
-}
-QScrollBar::handle:horizontal:hover { background: #52525b; }
-QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
-QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
-QFrame#toast {
-    background: #052e16;
-    border: 1px solid #166534;
-    border-radius: 9px;
-}
-QFrame#toast[tone="info"] { background: #172554; border-color: #1d4ed8; }
-QFrame#toast QLabel { background: transparent; }
-QLabel#toastIcon { color: #4ade80; font-size: 15px; font-weight: 800; }
-QFrame#toast[tone="info"] QLabel#toastIcon { color: #60a5fa; }
-QLabel#toastMessage { color: #f4f4f5; }
-QTabWidget::pane { border: 1px solid #27272a; border-radius: 6px; }
-QTabBar::tab { background: #18181b; color: #a1a1aa; padding: 8px 14px; border: 1px solid #27272a; }
-QTabBar::tab:selected { color: #ffffff; background: #27272a; }
-QStatusBar { background: #18181b; color: #a1a1aa; border-top: 1px solid #27272a; }
-"""

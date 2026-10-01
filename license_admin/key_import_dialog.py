@@ -26,6 +26,7 @@ from license_admin.key_store import (
     inspect_key_pair,
     public_key_fingerprint,
 )
+from license_admin.icons import svg_icon
 
 
 class KeyImportDialog(QDialog):
@@ -96,7 +97,12 @@ class KeyImportDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Xác minh và nhập")
+        import_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        import_button.setText("Xác minh và nhập")
+        import_button.setIcon(svg_icon("key", 16))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setIcon(
+            svg_icon("close", 16)
+        )
         buttons.accepted.connect(self._validate_and_import)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -112,6 +118,7 @@ class KeyImportDialog(QDialog):
         row.setContentsMargins(0, 0, 0, 0)
         edit = QLineEdit()
         button = QPushButton("Chọn…")
+        button.setIcon(svg_icon("folder", 16))
 
         def browse() -> None:
             selected, _ = QFileDialog.getOpenFileName(

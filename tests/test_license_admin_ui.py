@@ -10,13 +10,21 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtWidgets import QApplication, QMessageBox, QToolBar, QToolButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QMessageBox,
+    QPushButton,
+    QToolBar,
+    QToolButton,
+)
 
 from license_admin.dialogs import SettingsDialog
 from license_admin.domain import LicenseRecord
 from license_admin.main_window import LicenseAdminWindow
+from license_admin.icons import ICON_SPRITE_PATH, svg_icon
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.settings import ProjectStore
+from license_admin.theme import ADMIN_STYLESHEET
 from workspace_temp import workspace_temp_dir
 
 
@@ -25,6 +33,8 @@ class LicenseAdminUiTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         existing = QApplication.instance()
         cls.app = existing if isinstance(existing, QApplication) else QApplication([])
+        cls.app.setStyle("Fusion")
+        cls.app.setStyleSheet(ADMIN_STYLESHEET)
         cls.temporary_directory = workspace_temp_dir()
         root = Path(cls.temporary_directory.name)
         cls.project_store = ProjectStore(root / "projects")
@@ -117,12 +127,38 @@ class LicenseAdminUiTests(unittest.TestCase):
     def test_compact_layout_has_no_action_toolbar(self) -> None:
         window = self.create_window()
         try:
+            window.resize(980, 640)
+            window.show()
+            self.app.processEvents()
             self.assertEqual(window.findChildren(QToolBar), [])
             self.assertFalse(window.table.verticalHeader().isHidden())
             self.assertTrue(window.statusBar().isHidden())
-            self.assertIs(
-                window.menuBar().cornerWidget(Qt.Corner.TopRightCorner),
-                window.top_controls,
+            self.assertTrue(window.menuBar().isHidden())
+            self.assertEqual(window.sidebar.width(), 220)
+            self.assertEqual(window.top_bar.height(), 58)
+            self.assertIs(window.top_controls.parentWidget(), window.top_bar)
+            self.assertIs(window.primary_action_button.parentWidget(), window.top_bar)
+            self.assertEqual(window.primary_action_button.width(), 128)
+            self.assertLessEqual(window.primary_action_button.height(), 34)
+            self.assertIsNone(window.findChild(QPushButton, "quitButton"))
+            self.assertFalse(hasattr(window, "page_title"))
+            self.assertFalse(hasattr(window, "page_description"))
+            self.assertFalse(hasattr(window, "status_panel"))
+
+            sidebar_buttons = (
+                window.overview_button,
+                window.new_sidebar_button,
+                window.license_sidebar_menu,
+                window.sheet_sidebar_menu,
+                window.data_sidebar_menu,
+                window.settings_sidebar_button,
+                window.project_sidebar_menu,
+            )
+            self.assertEqual({button.height() for button in sidebar_buttons}, {42})
+            self.assertTrue(window.overview_button._active_indicator.isVisible())
+            self.assertEqual(
+                window.overview_button._active_indicator.geometry().getRect(),
+                (0, 12, 3, 18),
             )
         finally:
             window.close()
@@ -158,19 +194,42 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.app.processEvents()
 
             self.assertLessEqual(
-                window.sync_badge.geometry().right(),
+                window.project_combo.geometry().right(),
                 window.top_controls.rect().right(),
             )
-            clear_buttons = window.search_edit.findChildren(QToolButton)
-            self.assertEqual(len(clear_buttons), 1)
-            clear_center = clear_buttons[0].mapTo(
-                window.search_edit,
-                clear_buttons[0].rect().center(),
-            )
             self.assertLessEqual(
-                abs(clear_center.y() - window.search_edit.rect().center().y()),
-                1,
+                window.primary_action_button.geometry().right(),
+                window.top_bar.rect().right(),
             )
+            search_action_buttons = window.search_edit.findChildren(QToolButton)
+            self.assertEqual(len(search_action_buttons), 2)
+            for action_button in search_action_buttons:
+                action_center = action_button.mapTo(
+                    window.search_edit,
+                    action_button.rect().center(),
+                )
+                self.assertLessEqual(
+                    abs(action_center.y() - window.search_edit.rect().center().y()),
+                    1,
+                )
+        finally:
+            window.close()
+
+    def test_dashboard_cards_are_pixel_aligned_at_reference_size(self) -> None:
+        window = self.create_window()
+        try:
+            window.resize(1600, 900)
+            window.show()
+            self.app.processEvents()
+
+            metric_widths = [card.width() for card in window.metric_cards]
+            self.assertLessEqual(max(metric_widths) - min(metric_widths), 1)
+            self.assertEqual(window.sidebar.height(), window.centralWidget().height())
+            self.assertLessEqual(
+                window.table_panel.geometry().right(),
+                window.content_surface.rect().right(),
+            )
+            self.assertGreater(window.table.viewport().height(), 400)
         finally:
             window.close()
 
@@ -195,12 +254,78 @@ class LicenseAdminUiTests(unittest.TestCase):
 
             self.assertEqual(window._settings.project_id, "second-app")
             self.assertEqual(window.windowTitle(), "Second App — License Admin")
-            checked = [
-                action.text()
+            self.assertEqual(window.project_identity.name_label.text(), "Second App")
+            self.assertEqual(window.project_combo.currentData(), "second-app")
+            active_actions = [
+                action
                 for action in window.project_menu.actions()
-                if action.isCheckable() and action.isChecked()
+                if action.data() == "second-app"
             ]
-            self.assertEqual(checked, ["Second App"])
+            self.assertEqual([action.text() for action in active_actions], ["Second App"])
+            self.assertFalse(active_actions[0].icon().isNull())
+        finally:
+            window.close()
+
+    def test_svg_icon_system_and_disabled_menu_state(self) -> None:
+        window = self.create_window()
+        try:
+            self.assertTrue(ICON_SPRITE_PATH.is_file())
+            for icon_name in (
+                "grid",
+                "plus",
+                "key",
+                "cloud",
+                "database",
+                "settings",
+                "folder-project",
+                "search",
+                "close",
+                "total",
+                "check",
+                "clock",
+                "alert",
+                "edit",
+                "trash",
+                "eye",
+                "download",
+                "upload",
+                "format",
+                "plug",
+                "external",
+                "folder",
+                "import",
+                "migration",
+                "export",
+                "copy",
+                "toast-success",
+                "toast-info",
+                "table",
+            ):
+                self.assertFalse(svg_icon(icon_name).isNull(), icon_name)
+
+            actions = (
+                window.new_action,
+                window.edit_action,
+                window.revoke_action,
+                window.details_action,
+                window.pull_action,
+                window.push_action,
+                window.format_action,
+                window.test_action,
+                window.open_sheet_action,
+                window.settings_action,
+                window.new_project_action,
+                window.open_project_folder_action,
+                window.import_project_keys_action,
+                window.import_signed_action,
+                window.import_legacy_action,
+                window.export_action,
+            )
+            self.assertTrue(all(not action.icon().isNull() for action in actions))
+            self.assertFalse(window.edit_action.isEnabled())
+            self.assertFalse(window.revoke_action.isEnabled())
+            self.assertFalse(window.details_action.isEnabled())
+            self.assertIn("QMenu::item:disabled", ADMIN_STYLESHEET)
         finally:
             window.close()
 

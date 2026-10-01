@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from issue_license import LicenseIssueError, MAX_LICENSE_DAYS, normalize_hwid
 from license_admin.domain import LicenseRecord
 from license_admin.google_sheets import extract_spreadsheet_id
+from license_admin.icons import svg_icon
 from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.key_store import KeyPasswordRequiredError, inspect_key_pair
 from license_admin.settings import AdminSettings
@@ -82,6 +83,7 @@ class LicenseEditorDialog(QDialog):
         presets.addWidget(QLabel("Chọn nhanh:"))
         for days, label in ((30, "30 ngày"), (90, "90 ngày"), (365, "1 năm"), (730, "2 năm")):
             button = QPushButton(label)
+            button.setIcon(svg_icon("clock", 16))
             button.clicked.connect(
                 lambda checked=False, duration=days: self.expiry_edit.setDate(
                     utc_qdate.addDays(duration)
@@ -95,7 +97,12 @@ class LicenseEditorDialog(QDialog):
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Ký và lưu")
+        save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        save_button.setText("Ký và lưu")
+        save_button.setIcon(svg_icon("check", 16))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setIcon(
+            svg_icon("close", 16)
+        )
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -174,6 +181,7 @@ class SettingsDialog(QDialog):
         )
         self.import_keys_button = QPushButton("Nhập cặp key vào project…")
         self.import_keys_button.setObjectName("importProjectKeys")
+        self.import_keys_button.setIcon(svg_icon("key", 16))
         self.import_keys_button.clicked.connect(self._import_keys)
         files_form.addRow("", self.import_keys_button)
         key_warning = QLabel(
@@ -228,7 +236,12 @@ class SettingsDialog(QDialog):
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Lưu cài đặt")
+        save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        save_button.setText("Lưu cài đặt")
+        save_button.setIcon(svg_icon("check", 16))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setIcon(
+            svg_icon("close", 16)
+        )
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -247,6 +260,7 @@ class SettingsDialog(QDialog):
         row.setContentsMargins(0, 0, 0, 0)
         edit = QLineEdit(str(value) if value else "")
         button = QPushButton("Chọn…")
+        button.setIcon(svg_icon("folder", 16))
 
         def browse() -> None:
             if save:
@@ -404,6 +418,11 @@ class RecordDetailsDialog(QDialog):
         )
         copy_token = buttons.addButton(
             "Sao chép token", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        copy_hwid.setIcon(svg_icon("copy", 16))
+        copy_token.setIcon(svg_icon("copy", 16))
+        buttons.button(QDialogButtonBox.StandardButton.Close).setIcon(
+            svg_icon("close", 16)
         )
         copy_hwid.clicked.connect(
             lambda: self._copy(record.hwid)

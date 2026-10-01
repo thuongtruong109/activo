@@ -7,7 +7,8 @@ import sys
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication
 
-from license_admin.main_window import ADMIN_STYLESHEET, LicenseAdminWindow
+from license_admin.main_window import LicenseAdminWindow
+from license_admin.theme import ADMIN_STYLESHEET
 
 
 def main() -> int:
