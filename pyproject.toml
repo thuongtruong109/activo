@@ -1,0 +1,16 @@
+[tool.mypy]
+python_version = "3.12"
+strict = true
+explicit_package_bases = true
+show_error_codes = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+files = [
+    "issue_license.py",
+    "migrate_license_csv.py",
+    "license_admin",
+]
+
+[[tool.mypy.overrides]]
+module = ["PySide6.*"]
+ignore_missing_imports = true

@@ -1,0 +1,13 @@
+{
+  "id": "metalens",
+  "name": "Metalens",
+  "local_csv": "license_admin_data.csv",
+  "private_key": "private.pem",
+  "public_key": "public.pem",
+  "service_account": "",
+  "spreadsheet_id": "16OrDuAMLbEhFBUfZn20_GDPhX8zfC6PLvaxwMBb9KhA",
+  "worksheet": "Signed",
+  "public_csv_url": "https://docs.google.com/spreadsheets/d/16OrDuAMLbEhFBUfZn20_GDPhX8zfC6PLvaxwMBb9KhA/export?format=csv&gid=2039055929",
+  "issuer": "metalens-license-server",
+  "audience": "metalens-desktop"
+}

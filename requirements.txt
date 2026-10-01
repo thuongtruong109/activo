@@ -1,0 +1,7 @@
+PySide6
+cryptography>=45.0
+requests
+
+# Development
+mypy>=1.10
+types-requests>=2.32

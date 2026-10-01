@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.venv/
+dist/
+build/
+*.tmp
+
+# Publisher secrets and mutable license data
+projects/*/private*.pem
+projects/*/*.key
+projects/*/*.p12
+projects/*/*.pfx
+projects/*/license_admin_data.csv
+projects/*/input.csv
+projects/*/service-account*.json
+projects/*/google-credentials*.json
