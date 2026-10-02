@@ -1,0 +1,16 @@
+services:
+  license-admin:
+    build:
+      context: .
+    environment:
+      ACTIVO_VNC_PASSWORD: ${ACTIVO_VNC_PASSWORD:?Set ACTIVO_VNC_PASSWORD in .env}
+      ACTIVO_SCREEN: ${ACTIVO_SCREEN:-1440x900x24}
+    ports:
+      - "${ACTIVO_PORT:-6080}:6080"
+    restart: unless-stopped
+    shm_size: "256mb"
+    volumes:
+      - activo-data:/data
+
+volumes:
+  activo-data:
