@@ -115,32 +115,3 @@ class MetricCard(QFrame):
     def set_texts(self, title: str, note: str) -> None:
         self.title_label.setText(title)
         self.note_label.setText(note)
-
-
-class ProjectIdentityCard(QFrame):
-    def __init__(self) -> None:
-        super().__init__()
-        self.setObjectName("projectIdentity")
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 9, 10, 9)
-        layout.setSpacing(9)
-        self.avatar_label = QLabel("L")
-        self.avatar_label.setObjectName("projectAvatar")
-        self.avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.avatar_label.setFixedSize(34, 34)
-        copy = QVBoxLayout()
-        copy.setSpacing(1)
-        self.name_label = QLabel()
-        self.name_label.setObjectName("projectName")
-        self.id_label = QLabel()
-        self.id_label.setObjectName("projectId")
-        copy.addWidget(self.name_label)
-        copy.addWidget(self.id_label)
-        layout.addWidget(self.avatar_label)
-        layout.addLayout(copy, 1)
-
-    def set_project(self, name: str, project_id: str) -> None:
-        self.name_label.setText(name)
-        self.id_label.setText(project_id)
-        initial = next((character for character in name.strip() if character.isalnum()), "L")
-        self.avatar_label.setText(initial.upper())

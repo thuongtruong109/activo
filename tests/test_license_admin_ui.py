@@ -20,6 +20,12 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
+from license_admin.app_identity import (
+    APP_ICON_PATH,
+    APP_LOGO_PATH,
+    app_icon,
+    configure_application_identity,
+)
 from license_admin.dialogs import (
     LicenseEditorDialog,
     RecordDetailsDialog,
@@ -197,9 +203,9 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertIs(window.status_combo.parentWidget(), window.table_filters)
             self.assertIs(window.primary_action_button.parentWidget(), window.top_bar)
             self.assertEqual(window.primary_action_button.width(), 128)
+            self.assertEqual(window.project_combo.height(), 42)
             self.assertEqual(
                 {
-                    window.project_combo.height(),
                     window.primary_action_button.height(),
                     window.language_selector.height(),
                     window.search_edit.height(),
@@ -208,6 +214,10 @@ class LicenseAdminUiTests(unittest.TestCase):
                 },
                 {CONTROL_HEIGHT},
             )
+            self.assertFalse(hasattr(window, "project_label"))
+            self.assertFalse(hasattr(window, "project_identity"))
+            self.assertEqual(window.brand_mark.size().width(), 24)
+            self.assertFalse(window.brand_mark.pixmap().isNull())
             self.assertIsNone(window.findChild(QPushButton, "quitButton"))
             self.assertFalse(hasattr(window, "page_title"))
             self.assertFalse(hasattr(window, "page_description"))
@@ -588,7 +598,9 @@ class LicenseAdminUiTests(unittest.TestCase):
 
             self.assertEqual(window._settings.project_id, "second-app")
             self.assertEqual(window.windowTitle(), "Second App — License Admin")
-            self.assertEqual(window.project_identity.name_label.text(), "Second App")
+            self.assertEqual(window.project_combo.name_label.text(), "Second App")
+            self.assertEqual(window.project_combo.id_label.text(), "second-app")
+            self.assertEqual(window.project_combo.avatar_label.text(), "S")
             self.assertEqual(window.project_combo.currentData(), "second-app")
             active_actions = [
                 action
@@ -604,6 +616,18 @@ class LicenseAdminUiTests(unittest.TestCase):
         window = self.create_window()
         try:
             self.assertTrue(ICON_SPRITE_PATH.is_file())
+            self.assertTrue(APP_LOGO_PATH.is_file())
+            self.assertTrue(APP_ICON_PATH.is_file())
+            self.assertFalse(app_icon().isNull())
+            configure_application_identity(self.app)
+            self.assertFalse(self.app.windowIcon().isNull())
+            self.assertFalse(window.windowIcon().isNull())
+            editor = LicenseEditorDialog(window)
+            message_box = QMessageBox(window)
+            self.assertFalse(editor.windowIcon().isNull())
+            self.assertFalse(message_box.windowIcon().isNull())
+            editor.close()
+            message_box.close()
             for icon_name in (
                 "grid",
                 "plus",

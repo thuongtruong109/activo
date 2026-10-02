@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 import unicodedata
 from typing import Any
@@ -15,7 +16,11 @@ from issue_license import LicenseIssueError
 from license_admin.google_sheets import GoogleSheetsConfig, extract_spreadsheet_id
 
 
-APPLICATION_ROOT = Path(__file__).resolve().parents[1]
+APPLICATION_ROOT = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parents[1]
+)
 PROJECTS_ROOT = Path(
     os.environ.get("ACTIVO_PROJECTS_ROOT") or APPLICATION_ROOT / "projects"
 ).expanduser()

@@ -43,13 +43,6 @@ QPushButton#trafficMaximize { background: #28c840; }
 QPushButton#trafficClose:hover { background: #ff756e; }
 QPushButton#trafficMinimize:hover { background: #ffca4b; }
 QPushButton#trafficMaximize:hover { background: #45d45a; }
-QLabel#brandMark {
-    background: #12b9e9;
-    color: #ffffff;
-    border-radius: 9px;
-    font-size: 15px;
-    font-weight: 800;
-}
 QWidget#headerBrand { background: transparent; }
 QLabel#brandName { color: #f6f9fc; font-size: 11px; font-weight: 750; }
 QLabel#navSection { color: #526273; font-size: 9px; font-weight: 700; padding: 5px 9px; }
@@ -75,20 +68,27 @@ QPushButton#sidebarButton[active="true"], QToolButton#sidebarButton[active="true
 }
 QFrame#activeNavIndicator { background: #19c2ef; border: 0; border-radius: 1px; }
 QToolButton#sidebarButton::menu-indicator { image: none; width: 0; }
-QFrame#projectIdentity {
+QToolButton#projectSelector {
     background: #0b1b28;
     border: 1px solid #1b3041;
     border-radius: 9px;
+    padding: 0;
+    min-height: 40px;
+    max-height: 40px;
 }
-QLabel#projectAvatar {
+QToolButton#projectSelector:hover {
+    background: #102536;
+    border-color: #28516a;
+}
+QLabel#projectSelectorAvatar {
     background: #0b2b3d;
     color: #18bcea;
     border: 1px solid #16445b;
-    border-radius: 17px;
+    border-radius: 15px;
     font-weight: 800;
 }
-QLabel#projectName { color: #f2f7fb; font-size: 12px; font-weight: 700; }
-QLabel#projectId { color: #637386; font-size: 9px; }
+QLabel#projectSelectorName { color: #f2f7fb; font-size: 11px; font-weight: 700; }
+QLabel#projectSelectorId { color: #637386; font-size: 9px; }
 QFrame#topBar {
     background: #08121c;
     border-bottom: 1px solid #1a2937;
@@ -465,17 +465,18 @@ QToolButton#sidebarButton[active="true"] {
     background: #dce7f1;
     color: #172435;
 }
-QFrame#projectIdentity {
+QToolButton#projectSelector {
     background: #f7f9fc;
     border-color: #cfd9e4;
 }
-QLabel#projectAvatar {
+QToolButton#projectSelector:hover { background: #ffffff; border-color: #aebdcb; }
+QLabel#projectSelectorAvatar {
     background: #e4f6fc;
     color: #0788b1;
     border-color: #b7deeb;
 }
-QLabel#projectName { color: #1e2b3b; }
-QLabel#projectId { color: #77869a; }
+QLabel#projectSelectorName { color: #1e2b3b; }
+QLabel#projectSelectorId { color: #77869a; }
 QFrame#topBar {
     background: #f7f9fc;
     border-color: #d4dce6;

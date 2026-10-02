@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from issue_license import LicenseIssueError, issue_license_until, load_private_key
+from license_admin.app_identity import app_icon, app_logo_pixmap
 from license_admin.dialogs import (
     LicenseEditorDialog,
     RecordDetailsDialog,
@@ -43,7 +44,6 @@ from license_admin.dialogs import (
 )
 from license_admin.dashboard_widgets import (
     MetricCard,
-    ProjectIdentityCard,
     SidebarButton,
     SidebarMenuButton,
 )
@@ -71,9 +71,10 @@ from license_admin.project_config import (
     export_project_config,
     import_project_config,
 )
+from license_admin.project_selector import ProjectSelector
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
-from license_admin.settings import APPLICATION_ROOT, AdminSettings, ProjectStore
+from license_admin.settings import AdminSettings, ProjectStore
 from license_admin.storage import LicenseRepository
 from license_admin.toast import Toast
 from license_admin.theme import apply_theme
@@ -101,9 +102,7 @@ class LicenseAdminWindow(QMainWindow):
         enable_frameless_window(self)
         self.resize(1320, 820)
         self.setMinimumSize(980, 640)
-        icon_path = APPLICATION_ROOT / "app.ico"
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
+        self.setWindowIcon(app_icon())
 
         self._qsettings = qsettings or QSettings("LicenseTools", "LicenseAdmin")
         set_language(str(self._qsettings.value("ui/language", "en")))
@@ -239,10 +238,11 @@ class LicenseAdminWindow(QMainWindow):
         header_brand_layout = QHBoxLayout(self.header_brand)
         header_brand_layout.setContentsMargins(0, 0, 0, 0)
         header_brand_layout.setSpacing(6)
-        self.brand_mark = QLabel("L")
-        self.brand_mark.setObjectName("brandMark")
+        self.brand_mark = QLabel()
+        self.brand_mark.setObjectName("brandLogo")
         self.brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.brand_mark.setFixedSize(30, 30)
+        self.brand_mark.setFixedSize(24, 24)
+        self.brand_mark.setPixmap(app_logo_pixmap(22))
         self.brand_name = QLabel("LICENSE ADMIN")
         self.brand_name.setObjectName("brandName")
         header_brand_layout.addWidget(self.brand_mark)
@@ -278,15 +278,6 @@ class LicenseAdminWindow(QMainWindow):
             sidebar_content_layout.addWidget(button)
         sidebar_content_layout.addStretch(1)
 
-        self.project_label = QLabel(text("nav.current_project"))
-        self.project_label.setObjectName("navSection")
-        sidebar_content_layout.addWidget(self.project_label)
-        self.project_identity = ProjectIdentityCard()
-        self.project_identity.set_project(
-            self._settings.project_name,
-            self._settings.project_id,
-        )
-        sidebar_content_layout.addWidget(self.project_identity)
         self.project_sidebar_menu = SidebarMenuButton(
             text("nav.manage_projects"), "folder-project"
         )
@@ -306,11 +297,7 @@ class LicenseAdminWindow(QMainWindow):
         top_bar_layout = QHBoxLayout(self.top_bar)
         top_bar_layout.setContentsMargins(12, 8, 12, 8)
         top_bar_layout.setSpacing(10)
-        self.project_combo = PopoverSelect()
-        self.project_combo.setObjectName("projectCombo")
-        self.project_combo.setMinimumWidth(130)
-        self.project_combo.setMaximumWidth(190)
-        self.project_combo.setFixedHeight(CONTROL_HEIGHT)
+        self.project_combo = ProjectSelector()
         top_bar_layout.addWidget(self.project_combo)
         self.primary_action_button = QPushButton(text("action.new_license"))
         self.primary_action_button.setObjectName("primaryButton")
@@ -600,7 +587,6 @@ class LicenseAdminWindow(QMainWindow):
         self.sheet_sidebar_menu.setText(text("nav.sheets"))
         self.data_sidebar_menu.setText(text("nav.data"))
         self.settings_sidebar_button.setText(text("action.settings"))
-        self.project_label.setText(text("nav.current_project"))
         self.project_sidebar_menu.setText(text("nav.manage_projects"))
         self.search_edit.setPlaceholderText(text("dashboard.search"))
         self.primary_action_button.setText(text("action.new_license"))
@@ -636,11 +622,6 @@ class LicenseAdminWindow(QMainWindow):
 
     def _set_project_identity(self) -> None:
         self.setWindowTitle(f"{self._settings.project_name} — License Admin")
-        if hasattr(self, "project_identity"):
-            self.project_identity.set_project(
-                self._settings.project_name,
-                self._settings.project_id,
-            )
 
     def _rebuild_project_menu(self) -> None:
         self.project_menu.clear()

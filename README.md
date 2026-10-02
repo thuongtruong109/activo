@@ -18,6 +18,16 @@ python -m license_admin
 Trên Windows có thể double-click `run_license_admin.cmd` hoặc
 `license_admin_gui.pyw`.
 
+### Build file EXE trên Windows
+
+```powershell
+python -m PyInstaller --noconfirm --clean license_admin.spec
+```
+
+File `dist/LicenseAdmin.exe` dùng cùng logo với header, cửa sổ, modal, taskbar
+và icon hiển thị trong File Explorer. Khi chạy bản exe, thư mục `projects/`
+được tạo cạnh file exe để dữ liệu không nằm trong thư mục giải nén tạm.
+
 ## Quản lý nhiều dự án
 
 Mỗi thư mục `projects/<project-id>/` là một profile độc lập, gồm:
