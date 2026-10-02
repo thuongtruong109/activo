@@ -7,7 +7,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QComboBox,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
@@ -19,7 +18,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QStackedWidget,
     QTextEdit,
     QVBoxLayout,
@@ -86,10 +84,12 @@ class LicenseEditorDialog(QDialog):
         form.addRow(text("editor.username"), self.username_edit)
         form.addRow(text("editor.hwid"), self.hwid_edit)
         form.addRow(text("editor.expiry"), self.expiry_edit)
-        layout.addLayout(form)
 
-        presets = QHBoxLayout()
-        presets.addWidget(QLabel(text("editor.quick")))
+        self.quick_select_row = QWidget()
+        presets = QHBoxLayout(self.quick_select_row)
+        presets.setContentsMargins(0, 0, 0, 0)
+        presets.setSpacing(6)
+        self.quick_select_buttons: list[QPushButton] = []
         for days, label in (
             (30, text("editor.30_days")),
             (90, text("editor.90_days")),
@@ -103,9 +103,10 @@ class LicenseEditorDialog(QDialog):
                     utc_qdate.addDays(duration)
                 )
             )
-            presets.addWidget(button)
-        presets.addStretch()
-        layout.addLayout(presets)
+            self.quick_select_buttons.append(button)
+            presets.addWidget(button, 1)
+        form.addRow(text("editor.quick"), self.quick_select_row)
+        layout.addLayout(form)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save

@@ -184,12 +184,14 @@ class LicenseFilterModel(QSortFilterProxyModel):
         self.setDynamicSortFilter(True)
 
     def set_query(self, value: str) -> None:
+        self.beginFilterChange()
         self._query = normalize_search_text(value)
-        self.invalidateFilter()
+        self.endFilterChange()
 
     def set_status(self, status: LicenseStatus | None) -> None:
+        self.beginFilterChange()
         self._status = status
-        self.invalidateFilter()
+        self.endFilterChange()
 
     def filterAcceptsRow(
         self,

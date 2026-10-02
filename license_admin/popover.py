@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction, QActionGroup, QIcon
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSizePolicy, QToolButton, QWidget
 
 
@@ -37,6 +37,7 @@ class PopoverSelect(QToolButton):
         self._group.setExclusive(True)
         self._group.triggered.connect(self._action_selected)
         self._actions: list[QAction] = []
+        self._base_icons: dict[QAction, QIcon] = {}
         self._current_data: Any = None
 
     def add_item(
@@ -46,11 +47,13 @@ class PopoverSelect(QToolButton):
         *,
         icon: QIcon | None = None,
     ) -> QAction:
-        action = QAction(icon or QIcon(), text, self._group)
+        base_icon = icon or QIcon()
+        action = QAction(self._menu_icon(base_icon), text, self._group)
         action.setCheckable(True)
         action.setData(data)
         self._menu.addAction(action)
         self._actions.append(action)
+        self._base_icons[action] = base_icon
         if len(self._actions) == 1:
             self._select_action(action, emit=False)
         return action
@@ -61,6 +64,7 @@ class PopoverSelect(QToolButton):
             self._group.removeAction(action)
             action.deleteLater()
         self._actions.clear()
+        self._base_icons.clear()
         self._current_data = None
         self.setText("")
         self.setIcon(QIcon())
@@ -82,7 +86,8 @@ class PopoverSelect(QToolButton):
     def set_item_icon(self, data: Any, icon: QIcon) -> None:
         for action in self._actions:
             if action.data() == data:
-                action.setIcon(icon)
+                self._base_icons[action] = icon
+                action.setIcon(self._menu_icon(icon))
                 if data == self._current_data:
                     self.setIcon(icon)
                 return
@@ -105,6 +110,17 @@ class PopoverSelect(QToolButton):
         action.setChecked(True)
         self._current_data = action.data()
         self.setText(action.text())
-        self.setIcon(action.icon())
+        self.setIcon(self._base_icons.get(action, action.icon()))
         if emit:
             self.selection_changed.emit(self._current_data)
+
+    def _menu_icon(self, icon: QIcon) -> QIcon:
+        """Inset menu icons without changing the selected button icon."""
+        if icon.isNull():
+            return icon
+        canvas = QPixmap(20, 18)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        painter.drawPixmap(5, 3, icon.pixmap(14, 11))
+        painter.end()
+        return QIcon(canvas)

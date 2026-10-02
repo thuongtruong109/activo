@@ -111,6 +111,8 @@ không nên thêm liên kết mã nguồn giữa License Manager với ứng d�
 - Đổi trực tiếp giữa English, Tiếng Việt, Español, 日本語, 中文, 한국어 và
   Português; lựa chọn được lưu lại. Flag được tải bất đồng bộ từ FlagCDN, cache
   cục bộ và có placeholder khi offline.
+- Chuyển nhanh giữa giao diện Light/Dark bằng segmented tab trên header; theme
+  được lưu lại cho lần mở tiếp theo.
 - Self-host giao diện bằng Docker/noVNC với volume lưu dữ liệu bền vững.
 
 ## Bảo mật

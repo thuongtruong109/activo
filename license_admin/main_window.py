@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QFrame,
+    QHeaderView,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -56,7 +57,7 @@ from license_admin.domain import (
 )
 from license_admin.google_sheets import GoogleSheetsClient, download_public_records
 from license_admin.flag_icons import FlagIconLoader
-from license_admin.icons import icon_pixmap, svg_icon
+from license_admin.icons import svg_icon
 from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.localization import (
     LANGUAGES,
@@ -64,6 +65,7 @@ from license_admin.localization import (
     set_language,
     text,
 )
+from license_admin.modal_backdrop import ModalBackdrop
 from license_admin.popover import PopoverSelect, RoundedMenu
 from license_admin.project_config import (
     export_project_config,
@@ -74,7 +76,9 @@ from license_admin.service_account_import_dialog import ServiceAccountImportDial
 from license_admin.settings import APPLICATION_ROOT, AdminSettings, ProjectStore
 from license_admin.storage import LicenseRepository
 from license_admin.toast import Toast
-from license_admin.theme import ADMIN_STYLESHEET
+from license_admin.theme import apply_theme
+from license_admin.theme_toggle import ThemeToggle
+from license_admin.ui_metrics import CONTROL_HEIGHT
 from license_admin.worker import OperationThread
 from license_admin.window_chrome import (
     APP_HEADER_HEIGHT,
@@ -103,6 +107,9 @@ class LicenseAdminWindow(QMainWindow):
 
         self._qsettings = qsettings or QSettings("LicenseTools", "LicenseAdmin")
         set_language(str(self._qsettings.value("ui/language", "en")))
+        self._theme_mode = apply_theme(
+            str(self._qsettings.value("ui/theme", "dark"))
+        )
         self._project_store = project_store or ProjectStore()
         default_profile = self._project_store.ensure_default()
         active_project = str(
@@ -214,7 +221,7 @@ class LicenseAdminWindow(QMainWindow):
         self._flag_icons.icon_loaded.connect(self._flag_icon_loaded)
         self.language_selector = PopoverSelect()
         self.language_selector.setObjectName("languageSelect")
-        self.language_selector.setFixedSize(112, 26)
+        self.language_selector.setFixedSize(112, CONTROL_HEIGHT)
         self.language_selector.setIconSize(QSize(20, 14))
         for option in LANGUAGES:
             self.language_selector.add_item(
@@ -224,35 +231,29 @@ class LicenseAdminWindow(QMainWindow):
             )
         self.language_selector.set_current_data(current_language())
         self.language_selector.selection_changed.connect(self._language_selected)
-        self.window_chrome.add_trailing_widget(self.language_selector)
+        self.theme_toggle = ThemeToggle(self._theme_mode)
+        self.theme_toggle.mode_changed.connect(self._theme_selected)
+
+        self.header_brand = QWidget()
+        self.header_brand.setObjectName("headerBrand")
+        header_brand_layout = QHBoxLayout(self.header_brand)
+        header_brand_layout.setContentsMargins(0, 0, 0, 0)
+        header_brand_layout.setSpacing(6)
+        self.brand_mark = QLabel("L")
+        self.brand_mark.setObjectName("brandMark")
+        self.brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.brand_mark.setFixedSize(30, 30)
+        self.brand_name = QLabel("LICENSE ADMIN")
+        self.brand_name.setObjectName("brandName")
+        header_brand_layout.addWidget(self.brand_mark)
+        header_brand_layout.addWidget(self.brand_name)
+        self.window_chrome.add_trailing_widget(self.header_brand)
         sidebar_layout.addWidget(self.window_chrome)
 
         sidebar_content = QWidget()
         sidebar_content_layout = QVBoxLayout(sidebar_content)
         sidebar_content_layout.setContentsMargins(10, 0, 10, 12)
         sidebar_content_layout.setSpacing(5)
-
-        brand = QFrame()
-        brand.setObjectName("brandBlock")
-        brand.setFixedHeight(62)
-        brand_layout = QHBoxLayout(brand)
-        brand_layout.setContentsMargins(2, 7, 2, 9)
-        brand_layout.setSpacing(10)
-        brand_mark = QLabel("L")
-        brand_mark.setObjectName("brandMark")
-        brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        brand_mark.setFixedSize(40, 40)
-        brand_copy = QVBoxLayout()
-        brand_copy.setSpacing(1)
-        brand_name = QLabel("LICENSE ADMIN")
-        brand_name.setObjectName("brandName")
-        brand_subtitle = QLabel("MULTI-PROJECT CONSOLE")
-        brand_subtitle.setObjectName("brandSubtitle")
-        brand_copy.addWidget(brand_name)
-        brand_copy.addWidget(brand_subtitle)
-        brand_layout.addWidget(brand_mark)
-        brand_layout.addLayout(brand_copy, 1)
-        sidebar_content_layout.addWidget(brand)
 
         self.nav_label = QLabel(text("nav.navigation"))
         self.nav_label.setObjectName("navSection")
@@ -303,64 +304,32 @@ class LicenseAdminWindow(QMainWindow):
         self.top_bar.setObjectName("topBar")
         self.top_bar.setFixedHeight(APP_HEADER_HEIGHT)
         top_bar_layout = QHBoxLayout(self.top_bar)
-        top_bar_layout.setContentsMargins(14, 8, 12, 8)
+        top_bar_layout.setContentsMargins(12, 8, 12, 8)
         top_bar_layout.setSpacing(10)
-        top_bar_icon = QLabel()
-        top_bar_icon.setPixmap(icon_pixmap("grid", 17))
-        top_bar_icon.setFixedSize(17, 17)
-        top_bar_layout.addWidget(top_bar_icon)
-        self.top_bar_title = QLabel(text("dashboard.title"))
-        self.top_bar_title.setObjectName("topBarTitle")
-        top_bar_layout.addWidget(self.top_bar_title)
-        top_bar_layout.addSpacing(10)
-
-        self.top_controls = QWidget()
-        self.top_controls.setObjectName("topControls")
-        self.top_controls.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Preferred,
-        )
-        filters = QHBoxLayout(self.top_controls)
-        filters.setContentsMargins(0, 0, 0, 0)
-        filters.setSpacing(10)
-        self.search_edit = QLineEdit()
-        self.search_edit.setObjectName("dashboardSearch")
-        self.search_edit.setPlaceholderText(text("dashboard.search"))
-        self._search_icon_action = self.search_edit.addAction(
-            svg_icon("search", 16), QLineEdit.ActionPosition.LeadingPosition
-        )
-        self._search_clear_action = self.search_edit.addAction(
-            svg_icon("close", 16), QLineEdit.ActionPosition.TrailingPosition
-        )
-        self._search_clear_action.setVisible(False)
-        self._search_clear_action.triggered.connect(self.search_edit.clear)
-        self.search_edit.setMinimumWidth(160)
-        self.search_edit.setMaximumWidth(520)
-        self.search_edit.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
-        self.status_combo = PopoverSelect()
-        self.status_combo.setMinimumWidth(140)
-        self.status_combo.setFixedHeight(36)
-        self._populate_status_selector()
         self.project_combo = PopoverSelect()
         self.project_combo.setObjectName("projectCombo")
         self.project_combo.setMinimumWidth(130)
         self.project_combo.setMaximumWidth(190)
-        self.project_combo.setFixedHeight(36)
-        filters.addWidget(self.search_edit, 1)
-        filters.addWidget(self.status_combo)
-        filters.addWidget(self.project_combo)
-        top_bar_layout.addWidget(self.top_controls, 1)
+        self.project_combo.setFixedHeight(CONTROL_HEIGHT)
+        top_bar_layout.addWidget(self.project_combo)
         self.primary_action_button = QPushButton(text("action.new_license"))
         self.primary_action_button.setObjectName("primaryButton")
         self.primary_action_button.setFixedWidth(128)
+        self.primary_action_button.setFixedHeight(CONTROL_HEIGHT)
         self.primary_action_button.setIcon(svg_icon("plus-dark"))
         self.primary_action_button.setIconSize(QSize(16, 16))
         self.primary_action_button.clicked.connect(self.new_action.trigger)
         top_bar_layout.addWidget(
             self.primary_action_button,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
+        top_bar_layout.addStretch(1)
+        top_bar_layout.addWidget(
+            self.theme_toggle,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
+        top_bar_layout.addWidget(
+            self.language_selector,
             alignment=Qt.AlignmentFlag.AlignVCenter,
         )
         main_layout.addWidget(self.top_bar)
@@ -412,27 +381,48 @@ class LicenseAdminWindow(QMainWindow):
         table_panel_layout = QVBoxLayout(self.table_panel)
         table_panel_layout.setContentsMargins(1, 0, 1, 1)
         table_panel_layout.setSpacing(0)
-        table_header = QWidget()
-        table_header_layout = QHBoxLayout(table_header)
-        table_header_layout.setContentsMargins(14, 10, 12, 10)
-        table_header_layout.setSpacing(9)
-        table_icon = QLabel()
-        table_icon.setPixmap(icon_pixmap("table", 17))
-        table_icon.setFixedSize(17, 17)
-        table_header_layout.addWidget(
-            table_icon,
-            alignment=Qt.AlignmentFlag.AlignVCenter,
+        self.table_header = QWidget()
+        self.table_header.setObjectName("tableHeader")
+        table_header_layout = QHBoxLayout(self.table_header)
+        table_header_layout.setContentsMargins(10, 8, 12, 8)
+        table_header_layout.setSpacing(8)
+
+        self.table_filters = QWidget()
+        self.table_filters.setObjectName("tableFilters")
+        self.table_filters.setMaximumWidth(720)
+        self.table_filters.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
         )
-        table_copy = QVBoxLayout()
-        table_copy.setSpacing(1)
-        self.table_title = QLabel(text("table.title"))
-        self.table_title.setObjectName("panelTitle")
-        self.table_subtitle = QLabel(text("table.subtitle"))
-        self.table_subtitle.setObjectName("panelSubtitle")
-        table_copy.addWidget(self.table_title)
-        table_copy.addWidget(self.table_subtitle)
-        table_header_layout.addLayout(table_copy)
+        filters = QHBoxLayout(self.table_filters)
+        filters.setContentsMargins(0, 0, 0, 0)
+        filters.setSpacing(8)
+        self.search_edit = QLineEdit()
+        self.search_edit.setObjectName("dashboardSearch")
+        self.search_edit.setPlaceholderText(text("dashboard.search"))
+        self._search_icon_action = self.search_edit.addAction(
+            svg_icon("search", 16), QLineEdit.ActionPosition.LeadingPosition
+        )
+        self._search_clear_action = self.search_edit.addAction(
+            svg_icon("close", 16), QLineEdit.ActionPosition.TrailingPosition
+        )
+        self._search_clear_action.setVisible(False)
+        self._search_clear_action.triggered.connect(self.search_edit.clear)
+        self.search_edit.setMinimumWidth(180)
+        self.search_edit.setMaximumWidth(520)
+        self.search_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.status_combo = PopoverSelect()
+        self.status_combo.setFixedWidth(150)
+        self.status_combo.setFixedHeight(CONTROL_HEIGHT)
+        self._populate_status_selector()
+        filters.addWidget(self.search_edit, 1)
+        filters.addWidget(self.status_combo)
+        table_header_layout.addWidget(self.table_filters)
         table_header_layout.addStretch(1)
+
         self.visible_label = QLabel()
         self.visible_label.setObjectName("muted")
         table_header_layout.addWidget(self.visible_label)
@@ -450,7 +440,7 @@ class LicenseAdminWindow(QMainWindow):
             self.sync_badge,
             alignment=Qt.AlignmentFlag.AlignVCenter,
         )
-        table_panel_layout.addWidget(table_header)
+        table_panel_layout.addWidget(self.table_header)
 
         self.table_model = LicenseTableModel()
         self.proxy_model = LicenseFilterModel()
@@ -465,16 +455,23 @@ class LicenseAdminWindow(QMainWindow):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
         self.table.doubleClicked.connect(lambda _index: self._edit_license())
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.horizontalHeader().setMinimumSectionSize(80)
+        horizontal_header = self.table.horizontalHeader()
+        horizontal_header.setStretchLastSection(True)
+        horizontal_header.setMinimumSectionSize(72)
+        horizontal_header.setSectionResizeMode(
+            2,
+            QHeaderView.ResizeMode.ResizeToContents,
+        )
+        horizontal_header.setSectionResizeMode(
+            3,
+            QHeaderView.ResizeMode.ResizeToContents,
+        )
         self.table.verticalHeader().setVisible(True)
         self.table.verticalHeader().setDefaultSectionSize(32)
         self.table.verticalHeader().setMinimumWidth(42)
         self.table.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         self.table.setColumnWidth(0, 180)
         self.table.setColumnWidth(1, 310)
-        self.table.setColumnWidth(2, 130)
-        self.table.setColumnWidth(3, 145)
         self.table.setColumnWidth(4, 90)
         self.table.setColumnWidth(5, 145)
         self.table.setColumnWidth(6, 240)
@@ -557,6 +554,11 @@ class LicenseAdminWindow(QMainWindow):
         self._qsettings.setValue("ui/language", code)
         self._retranslate_ui()
 
+    def _theme_selected(self, mode: str) -> None:
+        self._theme_mode = apply_theme(mode)
+        self._qsettings.setValue("ui/theme", self._theme_mode)
+        self.theme_toggle.set_mode(self._theme_mode)
+
     def _flag_icon_loaded(self, country_code: str, icon: QIcon) -> None:
         option = next(
             (item for item in LANGUAGES if item.country_code == country_code),
@@ -590,6 +592,7 @@ class LicenseAdminWindow(QMainWindow):
         ):
             action.setText(text(key))
         self.window_chrome.retranslate()
+        self.theme_toggle.retranslate()
         self.nav_label.setText(text("nav.navigation"))
         self.overview_button.setText(text("nav.overview"))
         self.new_sidebar_button.setText(text("action.new_license"))
@@ -599,7 +602,6 @@ class LicenseAdminWindow(QMainWindow):
         self.settings_sidebar_button.setText(text("action.settings"))
         self.project_label.setText(text("nav.current_project"))
         self.project_sidebar_menu.setText(text("nav.manage_projects"))
-        self.top_bar_title.setText(text("dashboard.title"))
         self.search_edit.setPlaceholderText(text("dashboard.search"))
         self.primary_action_button.setText(text("action.new_license"))
         self.total_card.set_texts(text("metric.total"), text("metric.total_note"))
@@ -610,8 +612,6 @@ class LicenseAdminWindow(QMainWindow):
         self.expired_card.set_texts(
             text("metric.expired_error"), text("metric.expired_note")
         )
-        self.table_title.setText(text("table.title"))
-        self.table_subtitle.setText(text("table.subtitle"))
         self.project_menu.setTitle(text("nav.manage_projects"))
         self.file_menu.setTitle(text("nav.data"))
         self.license_menu.setTitle(text("nav.license"))
@@ -1300,7 +1300,9 @@ class LicenseAdminWindow(QMainWindow):
             ),
             record_count=len(self._records),
         )
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        with ModalBackdrop(self):
+            result = dialog.exec()
+        if result != dialog.DialogCode.Accepted:
             return
         values = dialog.values()
         try:

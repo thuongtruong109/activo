@@ -12,22 +12,33 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from PySide6.QtCore import QPoint, QSettings, Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
+    QHeaderView,
     QMessageBox,
     QPushButton,
     QToolBar,
     QToolButton,
 )
 
-from license_admin.dialogs import SettingsDialog
+from license_admin.dialogs import (
+    LicenseEditorDialog,
+    RecordDetailsDialog,
+    SettingsDialog,
+)
 from license_admin.domain import LicenseRecord
 from license_admin.flag_icons import FLAG_CDN_TEMPLATE, FlagIconLoader
+from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.main_window import LicenseAdminWindow
 from license_admin.icons import ICON_SPRITE_PATH, svg_icon
 from license_admin.localization import DEFAULT_LANGUAGE, LANGUAGES, set_language
+from license_admin.modal_backdrop import ModalBackdrop
 from license_admin.popover import RoundedMenu
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
+from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.settings import ProjectStore
-from license_admin.theme import ADMIN_STYLESHEET
+from license_admin.theme import ADMIN_STYLESHEET, stylesheet_for
+from license_admin.ui_metrics import CONTROL_HEIGHT
+from license_admin.window_chrome import DraggableFrame
 from workspace_temp import workspace_temp_dir
 
 
@@ -178,14 +189,40 @@ class LicenseAdminUiTests(unittest.TestCase):
                 ),
                 (12, 10, 12, 12),
             )
-            self.assertIs(window.top_controls.parentWidget(), window.top_bar)
+            self.assertIs(window.project_combo.parentWidget(), window.top_bar)
+            self.assertIs(window.language_selector.parentWidget(), window.top_bar)
+            self.assertIs(window.header_brand.parentWidget(), window.window_chrome)
+            self.assertIs(window.table_filters.parentWidget(), window.table_header)
+            self.assertIs(window.search_edit.parentWidget(), window.table_filters)
+            self.assertIs(window.status_combo.parentWidget(), window.table_filters)
             self.assertIs(window.primary_action_button.parentWidget(), window.top_bar)
             self.assertEqual(window.primary_action_button.width(), 128)
-            self.assertLessEqual(window.primary_action_button.height(), 34)
+            self.assertEqual(
+                {
+                    window.project_combo.height(),
+                    window.primary_action_button.height(),
+                    window.language_selector.height(),
+                    window.search_edit.height(),
+                    window.status_combo.height(),
+                    window.theme_toggle.height(),
+                },
+                {CONTROL_HEIGHT},
+            )
             self.assertIsNone(window.findChild(QPushButton, "quitButton"))
             self.assertFalse(hasattr(window, "page_title"))
             self.assertFalse(hasattr(window, "page_description"))
             self.assertFalse(hasattr(window, "status_panel"))
+            self.assertFalse(hasattr(window, "top_bar_title"))
+            self.assertFalse(hasattr(window, "table_title"))
+            self.assertFalse(hasattr(window, "table_subtitle"))
+            self.assertEqual(
+                window.table.horizontalHeader().sectionResizeMode(2),
+                QHeaderView.ResizeMode.ResizeToContents,
+            )
+            self.assertEqual(
+                window.table.horizontalHeader().sectionResizeMode(3),
+                QHeaderView.ResizeMode.ResizeToContents,
+            )
 
             sidebar_buttons = (
                 window.overview_button,
@@ -250,8 +287,24 @@ class LicenseAdminUiTests(unittest.TestCase):
                     settings.settings_tab_header.close_button.objectName(),
                     "modalCloseButton",
                 )
+                self.assertNotIsInstance(
+                    settings.settings_tab_header,
+                    DraggableFrame,
+                )
                 settings.show()
                 self.app.processEvents()
+                self.assertEqual(
+                    {
+                        settings.project_name_edit.height(),
+                        settings.project_id_edit.height(),
+                        settings.local_csv_edit.height(),
+                        settings.signing_key_edit.height(),
+                        settings.public_key_edit.height(),
+                        settings.import_keys_button.height(),
+                        settings.import_credentials_button.height(),
+                    },
+                    {CONTROL_HEIGHT},
+                )
                 self.assertFalse(settings.mask().isEmpty())
                 self.assertFalse(settings.mask().contains(QPoint(0, 0)))
                 self.assertTrue(
@@ -264,7 +317,7 @@ class LicenseAdminUiTests(unittest.TestCase):
         finally:
             window.close()
 
-    def test_top_controls_fit_and_clear_button_is_centered(self) -> None:
+    def test_table_filters_fit_and_clear_button_is_centered(self) -> None:
         window = self.create_window()
         try:
             window.resize(980, 640)
@@ -274,11 +327,34 @@ class LicenseAdminUiTests(unittest.TestCase):
 
             self.assertLessEqual(
                 window.project_combo.geometry().right(),
-                window.top_controls.rect().right(),
+                window.top_bar.rect().right(),
+            )
+            self.assertLessEqual(
+                window.status_combo.geometry().right(),
+                window.table_filters.rect().right(),
             )
             self.assertLessEqual(
                 window.primary_action_button.geometry().right(),
                 window.top_bar.rect().right(),
+            )
+            self.assertGreater(window.search_edit.width(), window.status_combo.width())
+            self.assertLess(
+                window.project_combo.geometry().left(),
+                window.primary_action_button.geometry().left(),
+            )
+            self.assertLess(
+                window.primary_action_button.geometry().right(),
+                window.language_selector.geometry().left(),
+            )
+            self.assertLess(
+                window.search_edit.mapTo(
+                    window.table_header,
+                    QPoint(0, 0),
+                ).x(),
+                window.visible_label.mapTo(
+                    window.table_header,
+                    QPoint(0, 0),
+                ).x(),
             )
             search_action_buttons = window.search_edit.findChildren(QToolButton)
             self.assertEqual(len(search_action_buttons), 2)
@@ -294,6 +370,121 @@ class LicenseAdminUiTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_theme_tabs_switch_and_persist_the_application_theme(self) -> None:
+        self.qsettings.setValue("ui/theme", "dark")
+        window = self.create_window()
+        try:
+            self.assertEqual(window.theme_toggle.mode, "dark")
+            self.assertTrue(window.theme_toggle.dark_button.isChecked())
+            self.assertFalse(window.theme_toggle.light_button.isChecked())
+
+            window.theme_toggle.set_mode("light", emit=True)
+            self.app.processEvents()
+
+            self.assertEqual(window.theme_toggle.mode, "light")
+            self.assertEqual(self.qsettings.value("ui/theme"), "light")
+            self.assertEqual(self.app.styleSheet(), stylesheet_for("light"))
+            self.assertTrue(window.theme_toggle.light_button.isChecked())
+            self.assertFalse(window.theme_toggle.dark_button.isChecked())
+        finally:
+            window.theme_toggle.set_mode("dark", emit=True)
+            window.close()
+
+    def test_editor_quick_select_aligns_with_form_fields(self) -> None:
+        window = self.create_window()
+        editor = LicenseEditorDialog(window)
+        try:
+            editor.show()
+            self.app.processEvents()
+            username_left = editor.username_edit.mapTo(editor, QPoint(0, 0)).x()
+            quick_select_left = editor.quick_select_row.mapTo(
+                editor,
+                QPoint(0, 0),
+            ).x()
+            self.assertEqual(quick_select_left, username_left)
+            self.assertEqual(
+                {
+                    editor.username_edit.height(),
+                    editor.hwid_edit.height(),
+                    editor.expiry_edit.height(),
+                    *(button.height() for button in editor.quick_select_buttons),
+                },
+                {CONTROL_HEIGHT},
+            )
+            quick_widths = [
+                button.width() for button in editor.quick_select_buttons
+            ]
+            self.assertLessEqual(
+                max(quick_widths) - min(quick_widths),
+                1,
+            )
+        finally:
+            editor.close()
+            window.close()
+
+    def test_every_dialog_action_button_uses_shared_control_height(self) -> None:
+        window = self.create_window()
+        project_directory = self.project_store.project_directory(
+            window._settings.project_id
+        )
+        dialogs = (
+            LicenseEditorDialog(window),
+            SettingsDialog(
+                window,
+                window._settings,
+                project_directory=project_directory,
+                record_count=0,
+            ),
+            KeyImportDialog(
+                window,
+                project_name=window._settings.project_name,
+                project_directory=project_directory,
+                record_count=0,
+            ),
+            ServiceAccountImportDialog(
+                window,
+                project_name=window._settings.project_name,
+                project_directory=project_directory,
+            ),
+            RecordDetailsDialog(
+                window,
+                LicenseRecord(
+                    username="Test user",
+                    hwid="abc12345",
+                    token="header.payload.signature",
+                ),
+            ),
+        )
+        try:
+            for dialog in dialogs:
+                dialog.show()
+                self.app.processEvents()
+                action_buttons = dialog.findChildren(QPushButton)
+                self.assertTrue(action_buttons, type(dialog).__name__)
+                self.assertEqual(
+                    {button.height() for button in action_buttons},
+                    {CONTROL_HEIGHT},
+                    type(dialog).__name__,
+                )
+                dialog.hide()
+        finally:
+            for dialog in dialogs:
+                dialog.close()
+            window.close()
+
+    def test_modal_backdrop_blurs_and_dims_the_main_window(self) -> None:
+        window = self.create_window()
+        try:
+            window.show()
+            self.app.processEvents()
+            with ModalBackdrop(window):
+                backdrop = window.findChild(QFrame, "modalBackdrop")
+                self.assertIsNotNone(backdrop)
+                self.assertTrue(backdrop.isVisible())
+                self.assertIsNotNone(window.centralWidget().graphicsEffect())
+        finally:
+            window.close()
+
     def test_rounded_popovers_and_live_language_switching(self) -> None:
         set_language(DEFAULT_LANGUAGE)
         self.qsettings.setValue("ui/language", DEFAULT_LANGUAGE)
@@ -301,7 +492,7 @@ class LicenseAdminUiTests(unittest.TestCase):
         try:
             self.assertIs(
                 window.language_selector.parentWidget(),
-                window.window_chrome,
+                window.top_bar,
             )
             self.assertEqual(window.language_selector.currentData(), "en")
             self.assertEqual(
@@ -346,6 +537,8 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertEqual(window.new_action.text(), "Tạo license")
             self.assertEqual(window.status_combo.actions()[0].text(), "Tất cả trạng thái")
             self.assertEqual(window.table_model.headerData(0, Qt.Orientation.Horizontal), "Người dùng")
+            self.assertEqual(window.theme_toggle.light_button.text(), "Sáng")
+            self.assertEqual(window.theme_toggle.dark_button.text(), "Tối")
 
             self.assertTrue(
                 window.language_selector.set_current_data("es", emit=True)

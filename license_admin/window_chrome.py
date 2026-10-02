@@ -109,8 +109,8 @@ class WindowChromeBar(DraggableFrame):
         return button
 
 
-class FramelessTabHeader(DraggableFrame):
-    """A dialog title bar where the tab list is the title content."""
+class FramelessTabHeader(QFrame):
+    """A fixed dialog header where the tab list is the title content."""
 
     current_changed = Signal(int)
 
