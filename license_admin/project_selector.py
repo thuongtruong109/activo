@@ -7,6 +7,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from license_admin.popover import PopoverSelect
+from license_admin.ui_metrics import CONTROL_HEIGHT
 
 
 class ProjectSelector(PopoverSelect):
@@ -15,18 +16,18 @@ class ProjectSelector(PopoverSelect):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("projectSelector")
-        self.setFixedHeight(42)
-        self.setMinimumWidth(184)
-        self.setMaximumWidth(240)
+        self.setFixedHeight(CONTROL_HEIGHT)
+        self.setMinimumWidth(160)
+        self.setMaximumWidth(210)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 24, 4)
-        layout.setSpacing(8)
+        layout.setContentsMargins(6, 3, 22, 3)
+        layout.setSpacing(6)
 
         self.avatar_label = QLabel("L")
         self.avatar_label.setObjectName("projectSelectorAvatar")
         self.avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.avatar_label.setFixedSize(30, 30)
+        self.avatar_label.setFixedSize(24, 24)
         self.avatar_label.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents
         )

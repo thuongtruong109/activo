@@ -12,6 +12,8 @@ from PySide6.QtWidgets import QApplication
 
 
 APP_DISPLAY_NAME = "License Admin"
+APP_VERSION = "1.0.0"
+SUPPORT_EMAIL = "thuongtruongofficial@gmail.com"
 WINDOWS_APP_USER_MODEL_ID = "LicenseTools.LicenseAdmin"
 ASSET_DIRECTORY = Path(__file__).with_name("assets")
 APP_LOGO_PATH = ASSET_DIRECTORY / "app-logo.png"

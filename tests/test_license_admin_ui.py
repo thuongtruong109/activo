@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from license_admin.app_identity import (
     APP_ICON_PATH,
     APP_LOGO_PATH,
+    SUPPORT_EMAIL,
     app_icon,
     configure_application_identity,
 )
@@ -36,6 +37,12 @@ from license_admin.flag_icons import FLAG_CDN_TEMPLATE, FlagIconLoader
 from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.main_window import LicenseAdminWindow
 from license_admin.icons import ICON_SPRITE_PATH, svg_icon
+from license_admin.information_dialogs import (
+    AboutDialog,
+    InformationDialog,
+    PolicyDialog,
+    TermsOfServiceDialog,
+)
 from license_admin.localization import DEFAULT_LANGUAGE, LANGUAGES, set_language
 from license_admin.modal_backdrop import ModalBackdrop
 from license_admin.popover import RoundedMenu
@@ -171,19 +178,25 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertFalse(window.mask().isEmpty())
             self.assertEqual(window.sidebar.width(), 220)
             self.assertEqual(window.top_bar.height(), 58)
+            self.assertEqual(window.sidebar_header.height(), window.top_bar.height())
+            self.assertIs(window.sidebar_header.parentWidget(), window.sidebar)
+            self.assertIs(window.window_controls.parentWidget(), window.top_bar)
+            self.assertEqual(window.window_controls.close_button.objectName(), "trafficClose")
             self.assertEqual(
-                window.window_chrome.height(),
-                window.top_bar.height(),
-            )
-            self.assertIs(window.window_chrome.parentWidget(), window.sidebar)
-            self.assertEqual(window.window_chrome.close_button.objectName(), "trafficClose")
-            self.assertEqual(
-                window.window_chrome.minimize_button.objectName(),
+                window.window_controls.minimize_button.objectName(),
                 "trafficMinimize",
             )
             self.assertEqual(
-                window.window_chrome.maximize_button.objectName(),
+                window.window_controls.maximize_button.objectName(),
                 "trafficMaximize",
+            )
+            self.assertLess(
+                window.window_controls.minimize_button.geometry().left(),
+                window.window_controls.maximize_button.geometry().left(),
+            )
+            self.assertLess(
+                window.window_controls.maximize_button.geometry().left(),
+                window.window_controls.close_button.geometry().left(),
             )
             content_margins = window.content_surface.layout().contentsMargins()
             self.assertEqual(
@@ -197,15 +210,21 @@ class LicenseAdminUiTests(unittest.TestCase):
             )
             self.assertIs(window.project_combo.parentWidget(), window.top_bar)
             self.assertIs(window.language_selector.parentWidget(), window.top_bar)
-            self.assertIs(window.header_brand.parentWidget(), window.window_chrome)
+            self.assertIs(window.header_brand.parentWidget(), window.sidebar_header)
+            self.assertIs(window.sidebar_toggle.parentWidget(), window.sidebar_header)
+            self.assertGreater(
+                window.sidebar_toggle.geometry().left()
+                - window.header_brand.geometry().right(),
+                20,
+            )
             self.assertIs(window.table_filters.parentWidget(), window.table_header)
             self.assertIs(window.search_edit.parentWidget(), window.table_filters)
             self.assertIs(window.status_combo.parentWidget(), window.table_filters)
             self.assertIs(window.primary_action_button.parentWidget(), window.top_bar)
             self.assertEqual(window.primary_action_button.width(), 128)
-            self.assertEqual(window.project_combo.height(), 42)
             self.assertEqual(
                 {
+                    window.project_combo.height(),
                     window.primary_action_button.height(),
                     window.language_selector.height(),
                     window.search_edit.height(),
@@ -216,6 +235,7 @@ class LicenseAdminUiTests(unittest.TestCase):
             )
             self.assertFalse(hasattr(window, "project_label"))
             self.assertFalse(hasattr(window, "project_identity"))
+            self.assertFalse(hasattr(window, "nav_label"))
             self.assertEqual(window.brand_mark.size().width(), 24)
             self.assertFalse(window.brand_mark.pixmap().isNull())
             self.assertIsNone(window.findChild(QPushButton, "quitButton"))
@@ -249,12 +269,96 @@ class LicenseAdminUiTests(unittest.TestCase):
                 window.overview_button._active_indicator.geometry().getRect(),
                 (0, 12, 3, 18),
             )
+
+            window.sidebar_toggle.click()
+            self.app.processEvents()
+            self.assertEqual(window.sidebar.width(), 72)
+            self.assertTrue(window.header_brand.isHidden())
+            self.assertFalse(window.brand_mark.isVisible())
+            self.assertEqual(window.overview_button.text(), "")
+            self.assertEqual(window.project_sidebar_menu.text(), "")
+            self.assertTrue(window.project_sidebar_menu._chevron.isHidden())
+            self.assertEqual(
+                window.project_sidebar_menu.toolButtonStyle(),
+                Qt.ToolButtonStyle.ToolButtonIconOnly,
+            )
+
+            window.sidebar_toggle.click()
+            self.app.processEvents()
+            self.assertEqual(window.sidebar.width(), 220)
+            self.assertFalse(window.header_brand.isHidden())
+            self.assertTrue(window.brand_mark.isVisible())
+            self.assertEqual(window.overview_button.text(), "Overview")
+            self.assertEqual(window.project_sidebar_menu.text(), "Manage projects")
+        finally:
+            window.close()
+
+    def test_header_information_buttons_open_user_facing_documents(self) -> None:
+        window = self.create_window()
+        try:
+            for button, tooltip in (
+                (window.about_button, "About"),
+                (window.policy_button, "Policy"),
+                (window.terms_button, "Terms of service"),
+            ):
+                self.assertIs(button.parentWidget(), window.header_info_group)
+                self.assertEqual(button.size().height(), CONTROL_HEIGHT - 2)
+                self.assertEqual(button.toolTip(), tooltip)
+                self.assertFalse(button.icon().isNull())
+            self.assertIs(window.header_info_group.parentWidget(), window.top_bar)
+
+            about = AboutDialog(window)
+            policy = PolicyDialog(window)
+            terms = TermsOfServiceDialog(window)
+            for dialog in (about, policy, terms):
+                self.assertEqual(dialog.objectName(), "informationDialog")
+                self.assertIsNotNone(dialog.findChild(QFrame, "informationSurface"))
+            self.assertIsNotNone(about.contact_link)
+            assert about.contact_link is not None
+            self.assertIn(SUPPORT_EMAIL, about.contact_link.text())
+            self.assertTrue(about.contact_link.openExternalLinks())
+            self.assertIsNone(policy.contact_link)
+            self.assertIsNone(terms.contact_link)
+
+            about_copy = " ".join(
+                label.text() for label in about.section_bodies
+            ).casefold()
+            for implementation_detail in (
+                "python",
+                "pyside",
+                "qt",
+                "cryptography",
+                "technology stack",
+            ):
+                self.assertNotIn(implementation_detail, about_copy)
+
+            self.assertGreaterEqual(len(policy.section_titles), 5)
+            self.assertGreaterEqual(len(terms.section_titles), 5)
+
+            with patch.object(InformationDialog, "exec", return_value=0) as show:
+                window.about_button.click()
+                window.policy_button.click()
+                window.terms_button.click()
+            self.assertEqual(show.call_count, 3)
+            about.close()
+            policy.close()
+            terms.close()
         finally:
             window.close()
 
     def test_project_menu_exposes_key_import_and_settings_dialog_reuses_it(self) -> None:
         window = self.create_window()
         try:
+            project_ids = {
+                profile.project_id for profile in self.project_store.list_profiles()
+            }
+            self.assertFalse(
+                any(
+                    action.data() in project_ids
+                    for action in window.project_menu.actions()
+                )
+            )
+            self.assertIs(window.project_menu.actions()[0], window.new_project_action)
             self.assertIn(window.import_project_keys_action, window.project_menu.actions())
             self.assertIn(
                 window.import_google_credentials_action,
@@ -604,11 +708,11 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertEqual(window.project_combo.currentData(), "second-app")
             active_actions = [
                 action
-                for action in window.project_menu.actions()
+                for action in window.project_combo.actions()
                 if action.data() == "second-app"
             ]
             self.assertEqual([action.text() for action in active_actions], ["Second App"])
-            self.assertFalse(active_actions[0].icon().isNull())
+            self.assertTrue(active_actions[0].isChecked())
         finally:
             window.close()
 
@@ -628,6 +732,14 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertFalse(message_box.windowIcon().isNull())
             editor.close()
             message_box.close()
+            check_asset = (ICON_SPRITE_PATH.parent / "menu-check.svg").read_text(
+                encoding="utf-8"
+            )
+            light_check_asset = (
+                ICON_SPRITE_PATH.parent / "menu-check-light.svg"
+            ).read_text(encoding="utf-8")
+            self.assertIn("#32d296", check_asset)
+            self.assertIn("#159a68", light_check_asset)
             for icon_name in (
                 "grid",
                 "plus",
@@ -658,6 +770,10 @@ class LicenseAdminUiTests(unittest.TestCase):
                 "toast-success",
                 "toast-info",
                 "table",
+                "sidebar-toggle",
+                "about",
+                "shield",
+                "document",
             ):
                 self.assertFalse(svg_icon(icon_name).isNull(), icon_name)
 

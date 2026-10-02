@@ -20,6 +20,7 @@ from license_admin.icons import icon_pixmap, svg_icon
 class SidebarButton(QPushButton):
     def __init__(self, text: str, icon_name: str, *, active: bool = False) -> None:
         super().__init__(text)
+        self._label = text
         self.setObjectName("sidebarButton")
         self.setProperty("active", active)
         self.setIcon(svg_icon(icon_name))
@@ -38,10 +39,23 @@ class SidebarButton(QPushButton):
         super().resizeEvent(event)
         self._active_indicator.setGeometry(0, (self.height() - 18) // 2, 3, 18)
 
+    def set_label(self, label: str) -> None:
+        self._label = label
+        self.setText("" if self.property("collapsed") else label)
+        self.setToolTip(label if self.property("collapsed") else "")
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self.setProperty("collapsed", collapsed)
+        self.setText("" if collapsed else self._label)
+        self.setToolTip(self._label if collapsed else "")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
 
 class SidebarMenuButton(QToolButton):
     def __init__(self, text: str, icon_name: str) -> None:
         super().__init__()
+        self._label = text
         self.setText(text)
         self.setObjectName("sidebarButton")
         self.setIcon(svg_icon(icon_name))
@@ -59,6 +73,24 @@ class SidebarMenuButton(QToolButton):
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._chevron.move(self.width() - 23, (self.height() - 13) // 2)
+
+    def set_label(self, label: str) -> None:
+        self._label = label
+        self.setText("" if self.property("collapsed") else label)
+        self.setToolTip(label if self.property("collapsed") else "")
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self.setProperty("collapsed", collapsed)
+        self.setText("" if collapsed else self._label)
+        self.setToolTip(self._label if collapsed else "")
+        self.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonIconOnly
+            if collapsed
+            else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self._chevron.setVisible(not collapsed)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 class MetricCard(QFrame):

@@ -96,4 +96,16 @@
   <g id="table" fill="none" stroke="#7f93a5" stroke-width="1.7" stroke-linejoin="round">
     <rect width="24" height="24" fill="none" stroke="none"/><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M3.5 9.5h17M9 4.5v15M15 4.5v15"/>
   </g>
+  <g id="sidebar-toggle" fill="none" stroke="#9db0c1" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M9 5v14"/>
+  </g>
+  <g id="about" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><circle cx="12" cy="12" r="8.5"/><path d="M12 11v6M12 7h.01" stroke-width="2.4"/>
+  </g>
+  <g id="shield" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M12 3.5 19 6v5.2c0 4.6-2.8 7.7-7 9.3-4.2-1.6-7-4.7-7-9.3V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/>
+  </g>
+  <g id="document" fill="none" stroke="#9db0c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect width="24" height="24" fill="none" stroke="none"/><path d="M6 3.5h8l4 4V20H6zM14 3.5v4h4M9 12h6M9 16h6"/>
+  </g>
 </svg>

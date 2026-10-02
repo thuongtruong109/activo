@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QTableView,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -58,6 +59,12 @@ from license_admin.domain import (
 from license_admin.google_sheets import GoogleSheetsClient, download_public_records
 from license_admin.flag_icons import FlagIconLoader
 from license_admin.icons import svg_icon
+from license_admin.information_dialogs import (
+    AboutDialog,
+    InformationDialog,
+    PolicyDialog,
+    TermsOfServiceDialog,
+)
 from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.localization import (
     LANGUAGES,
@@ -85,7 +92,7 @@ from license_admin.window_chrome import (
     APP_HEADER_HEIGHT,
     DraggableFrame,
     FramelessResizeController,
-    WindowChromeBar,
+    WindowControls,
     enable_frameless_window,
 )
 from migrate_license_csv import migrate_legacy_csv
@@ -215,7 +222,6 @@ class LicenseAdminWindow(QMainWindow):
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
 
-        self.window_chrome = WindowChromeBar(self)
         self._flag_icons = FlagIconLoader(self)
         self._flag_icons.icon_loaded.connect(self._flag_icon_loaded)
         self.language_selector = PopoverSelect()
@@ -233,8 +239,20 @@ class LicenseAdminWindow(QMainWindow):
         self.theme_toggle = ThemeToggle(self._theme_mode)
         self.theme_toggle.mode_changed.connect(self._theme_selected)
 
+        self.sidebar_header = DraggableFrame()
+        self.sidebar_header.setObjectName("sidebarHeader")
+        self.sidebar_header.setFixedHeight(APP_HEADER_HEIGHT)
+        self.sidebar_header_layout = QHBoxLayout(self.sidebar_header)
+        self.sidebar_header_layout.setContentsMargins(12, 0, 8, 0)
+        self.sidebar_header_layout.setSpacing(5)
+
         self.header_brand = QWidget()
         self.header_brand.setObjectName("headerBrand")
+        self.header_brand.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.header_brand.setFixedWidth(130)
         header_brand_layout = QHBoxLayout(self.header_brand)
         header_brand_layout.setContentsMargins(0, 0, 0, 0)
         header_brand_layout.setSpacing(6)
@@ -247,17 +265,21 @@ class LicenseAdminWindow(QMainWindow):
         self.brand_name.setObjectName("brandName")
         header_brand_layout.addWidget(self.brand_mark)
         header_brand_layout.addWidget(self.brand_name)
-        self.window_chrome.add_trailing_widget(self.header_brand)
-        sidebar_layout.addWidget(self.window_chrome)
+        self.sidebar_header_layout.addWidget(self.header_brand)
+        self.sidebar_header_layout.addStretch(1)
+        self.sidebar_toggle = QToolButton()
+        self.sidebar_toggle.setObjectName("sidebarToggle")
+        self.sidebar_toggle.setFixedSize(28, 28)
+        self.sidebar_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sidebar_toggle.clicked.connect(self._toggle_sidebar)
+        self.sidebar_header_layout.addWidget(self.sidebar_toggle)
+        sidebar_layout.addWidget(self.sidebar_header)
 
         sidebar_content = QWidget()
-        sidebar_content_layout = QVBoxLayout(sidebar_content)
-        sidebar_content_layout.setContentsMargins(10, 0, 10, 12)
-        sidebar_content_layout.setSpacing(5)
+        self.sidebar_content_layout = QVBoxLayout(sidebar_content)
+        self.sidebar_content_layout.setContentsMargins(10, 4, 10, 12)
+        self.sidebar_content_layout.setSpacing(5)
 
-        self.nav_label = QLabel(text("nav.navigation"))
-        self.nav_label.setObjectName("navSection")
-        sidebar_content_layout.addWidget(self.nav_label)
         self.overview_button = SidebarButton(text("nav.overview"), "grid", active=True)
         self.overview_button.clicked.connect(self._focus_dashboard)
         self.new_sidebar_button = SidebarButton(text("action.new_license"), "plus")
@@ -267,7 +289,7 @@ class LicenseAdminWindow(QMainWindow):
         self.data_sidebar_menu = SidebarMenuButton(text("nav.data"), "database")
         self.settings_sidebar_button = SidebarButton(text("action.settings"), "settings")
         self.settings_sidebar_button.clicked.connect(self.settings_action.trigger)
-        for button in (
+        for sidebar_button in (
             self.overview_button,
             self.new_sidebar_button,
             self.license_sidebar_menu,
@@ -275,13 +297,13 @@ class LicenseAdminWindow(QMainWindow):
             self.data_sidebar_menu,
             self.settings_sidebar_button,
         ):
-            sidebar_content_layout.addWidget(button)
-        sidebar_content_layout.addStretch(1)
+            self.sidebar_content_layout.addWidget(sidebar_button)
+        self.sidebar_content_layout.addStretch(1)
 
         self.project_sidebar_menu = SidebarMenuButton(
             text("nav.manage_projects"), "folder-project"
         )
-        sidebar_content_layout.addWidget(self.project_sidebar_menu)
+        self.sidebar_content_layout.addWidget(self.project_sidebar_menu)
         sidebar_layout.addWidget(sidebar_content, 1)
         shell.addWidget(self.sidebar)
 
@@ -296,7 +318,7 @@ class LicenseAdminWindow(QMainWindow):
         self.top_bar.setFixedHeight(APP_HEADER_HEIGHT)
         top_bar_layout = QHBoxLayout(self.top_bar)
         top_bar_layout.setContentsMargins(12, 8, 12, 8)
-        top_bar_layout.setSpacing(10)
+        top_bar_layout.setSpacing(8)
         self.project_combo = ProjectSelector()
         top_bar_layout.addWidget(self.project_combo)
         self.primary_action_button = QPushButton(text("action.new_license"))
@@ -311,12 +333,55 @@ class LicenseAdminWindow(QMainWindow):
             alignment=Qt.AlignmentFlag.AlignVCenter,
         )
         top_bar_layout.addStretch(1)
+
+        self.header_info_group = QFrame()
+        self.header_info_group.setObjectName("headerInfoGroup")
+        self.header_info_group.setFixedHeight(CONTROL_HEIGHT)
+        header_info_layout = QHBoxLayout(self.header_info_group)
+        header_info_layout.setContentsMargins(1, 1, 1, 1)
+        header_info_layout.setSpacing(0)
+        self.about_button = self._header_info_button(
+            "about",
+            "info.about",
+            self._show_about,
+        )
+        self.policy_button = self._header_info_button(
+            "shield",
+            "info.policy",
+            self._show_policy,
+        )
+        self.terms_button = self._header_info_button(
+            "document",
+            "info.terms",
+            self._show_terms,
+        )
+        for index, info_button in enumerate(
+            (self.about_button, self.policy_button, self.terms_button)
+        ):
+            if index:
+                divider = QFrame()
+                divider.setObjectName("headerInfoDivider")
+                divider.setFixedSize(1, 16)
+                header_info_layout.addWidget(
+                    divider,
+                    alignment=Qt.AlignmentFlag.AlignVCenter,
+                )
+            header_info_layout.addWidget(info_button)
+        top_bar_layout.addWidget(
+            self.header_info_group,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
         top_bar_layout.addWidget(
             self.theme_toggle,
             alignment=Qt.AlignmentFlag.AlignVCenter,
         )
         top_bar_layout.addWidget(
             self.language_selector,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
+        self.window_controls = WindowControls(self)
+        top_bar_layout.addWidget(
+            self.window_controls,
             alignment=Qt.AlignmentFlag.AlignVCenter,
         )
         main_layout.addWidget(self.top_bar)
@@ -478,10 +543,28 @@ class LicenseAdminWindow(QMainWindow):
         self.proxy_model.modelReset.connect(self._refresh_visible_count)
         self.table.selectionModel().selectionChanged.connect(self._selection_changed)
         self.project_combo.selection_changed.connect(self._project_combo_changed)
+        self._set_sidebar_collapsed(False)
         self.setCentralWidget(central)
         self.toast = Toast(self)
         self.statusBar().hide()
         self._selection_changed()
+
+    def _header_info_button(
+        self,
+        icon_name: str,
+        label_key: str,
+        callback: Callable[[], None],
+    ) -> QToolButton:
+        button = QToolButton(self.header_info_group)
+        button.setObjectName("headerInfoButton")
+        button.setFixedSize(CONTROL_HEIGHT - 2, CONTROL_HEIGHT - 2)
+        button.setIcon(svg_icon(icon_name, 16))
+        button.setIconSize(QSize(16, 16))
+        button.setToolTip(text(label_key))
+        button.setAccessibleName(text(label_key))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.clicked.connect(callback)
+        return button
 
     def _create_menus(self) -> None:
         self.menuBar().hide()
@@ -578,16 +661,23 @@ class LicenseAdminWindow(QMainWindow):
             (self.quit_action, "action.quit"),
         ):
             action.setText(text(key))
-        self.window_chrome.retranslate()
+        self.window_controls.retranslate()
         self.theme_toggle.retranslate()
-        self.nav_label.setText(text("nav.navigation"))
-        self.overview_button.setText(text("nav.overview"))
-        self.new_sidebar_button.setText(text("action.new_license"))
-        self.license_sidebar_menu.setText(text("nav.license"))
-        self.sheet_sidebar_menu.setText(text("nav.sheets"))
-        self.data_sidebar_menu.setText(text("nav.data"))
-        self.settings_sidebar_button.setText(text("action.settings"))
-        self.project_sidebar_menu.setText(text("nav.manage_projects"))
+        for button, label_key in (
+            (self.about_button, "info.about"),
+            (self.policy_button, "info.policy"),
+            (self.terms_button, "info.terms"),
+        ):
+            button.setToolTip(text(label_key))
+            button.setAccessibleName(text(label_key))
+        self.overview_button.set_label(text("nav.overview"))
+        self.new_sidebar_button.set_label(text("action.new_license"))
+        self.license_sidebar_menu.set_label(text("nav.license"))
+        self.sheet_sidebar_menu.set_label(text("nav.sheets"))
+        self.data_sidebar_menu.set_label(text("nav.data"))
+        self.settings_sidebar_button.set_label(text("action.settings"))
+        self.project_sidebar_menu.set_label(text("nav.manage_projects"))
+        self._update_sidebar_toggle()
         self.search_edit.setPlaceholderText(text("dashboard.search"))
         self.primary_action_button.setText(text("action.new_license"))
         self.total_card.set_texts(text("metric.total"), text("metric.total_note"))
@@ -623,25 +713,65 @@ class LicenseAdminWindow(QMainWindow):
     def _set_project_identity(self) -> None:
         self.setWindowTitle(f"{self._settings.project_name} — License Admin")
 
+    def _toggle_sidebar(self) -> None:
+        self._set_sidebar_collapsed(not self._sidebar_collapsed)
+
+    def _set_sidebar_collapsed(self, collapsed: bool) -> None:
+        self._sidebar_collapsed = collapsed
+        self.sidebar.setFixedWidth(72 if collapsed else 220)
+        self.header_brand.setVisible(not collapsed)
+        self.sidebar_header_layout.setContentsMargins(
+            6 if collapsed else 12,
+            0,
+            4 if collapsed else 8,
+            0,
+        )
+        self.sidebar_header_layout.setSpacing(2 if collapsed else 5)
+        self.sidebar_content_layout.setContentsMargins(
+            8 if collapsed else 10,
+            4,
+            8 if collapsed else 10,
+            12,
+        )
+        for button in (
+            self.overview_button,
+            self.new_sidebar_button,
+            self.license_sidebar_menu,
+            self.sheet_sidebar_menu,
+            self.data_sidebar_menu,
+            self.settings_sidebar_button,
+            self.project_sidebar_menu,
+        ):
+            button.set_collapsed(collapsed)
+        self._update_sidebar_toggle()
+
+    def _update_sidebar_toggle(self) -> None:
+        self.sidebar_toggle.setIcon(svg_icon("sidebar-toggle", 16))
+        self.sidebar_toggle.setToolTip(
+            text(
+                "nav.expand_sidebar"
+                if self._sidebar_collapsed
+                else "nav.collapse_sidebar"
+            )
+        )
+        self.sidebar_toggle.setIconSize(QSize(16, 16))
+
+    def _show_information_dialog(self, dialog: InformationDialog) -> None:
+        with ModalBackdrop(self):
+            dialog.exec()
+
+    def _show_about(self) -> None:
+        self._show_information_dialog(AboutDialog(self))
+
+    def _show_policy(self) -> None:
+        self._show_information_dialog(PolicyDialog(self))
+
+    def _show_terms(self) -> None:
+        self._show_information_dialog(TermsOfServiceDialog(self))
+
     def _rebuild_project_menu(self) -> None:
         self.project_menu.clear()
         profiles = self._project_store.list_profiles()
-        for profile in profiles:
-            action = self.project_menu.addAction(profile.project_name)
-            action.setIcon(
-                svg_icon(
-                    "check"
-                    if profile.project_id == self._settings.project_id
-                    else "folder-project"
-                )
-            )
-            action.setData(profile.project_id)
-            action.triggered.connect(
-                lambda _checked=False, project_id=profile.project_id: (
-                    self._switch_project(project_id)
-                )
-            )
-        self.project_menu.addSeparator()
         self.project_menu.addAction(self.new_project_action)
         self.project_menu.addAction(self.import_project_keys_action)
         self.project_menu.addAction(self.import_google_credentials_action)

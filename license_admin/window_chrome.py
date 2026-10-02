@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QPushButton,
+    QSizePolicy,
     QTabBar,
     QToolButton,
     QWidget,
@@ -53,24 +54,18 @@ class DraggableFrame(QFrame):
         super().mouseDoubleClickEvent(event)
 
 
-class WindowChromeBar(DraggableFrame):
-    """Compact macOS-style close, minimize and zoom controls."""
+class WindowControls(DraggableFrame):
+    """Compact window controls ordered like the Windows title bar."""
 
     def __init__(self, target: QWidget) -> None:
         super().__init__()
         self._target = target
-        self.setObjectName("windowChrome")
-        self.setFixedHeight(APP_HEADER_HEIGHT)
+        self.setObjectName("windowControls")
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         layout = QHBoxLayout(self)
-        self._layout = layout
-        layout.setContentsMargins(12, 0, 8, 0)
+        layout.setContentsMargins(2, 0, 0, 0)
         layout.setSpacing(8)
-        self.close_button = self._button(
-            "trafficClose",
-            text("chrome.close"),
-            target.close,
-        )
         self.minimize_button = self._button(
             "trafficMinimize",
             text("chrome.minimize"),
@@ -81,13 +76,14 @@ class WindowChromeBar(DraggableFrame):
             text("chrome.maximize"),
             lambda: _toggle_maximized(target),
         )
-        layout.addWidget(self.close_button)
+        self.close_button = self._button(
+            "trafficClose",
+            text("chrome.close"),
+            target.close,
+        )
         layout.addWidget(self.minimize_button)
         layout.addWidget(self.maximize_button)
-        layout.addStretch(1)
-
-    def add_trailing_widget(self, widget: QWidget) -> None:
-        self._layout.insertWidget(self._layout.count() - 1, widget)
+        layout.addWidget(self.close_button)
 
     def retranslate(self) -> None:
         self.close_button.setToolTip(text("chrome.close"))
