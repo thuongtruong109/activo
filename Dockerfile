@@ -8,6 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOME=/home/activo \
     XDG_RUNTIME_DIR=/tmp/runtime-activo \
     XDG_CONFIG_HOME=/data/config \
+    XDG_CACHE_HOME=/data/cache \
     ACTIVO_PROJECTS_ROOT=/data/projects
 
 RUN apt-get update \
@@ -41,7 +42,7 @@ RUN apt-get update \
 
 RUN groupadd --gid 10001 activo \
     && useradd --uid 10001 --gid activo --create-home --shell /bin/sh activo \
-    && mkdir -p /app /data/projects /data/config /tmp/runtime-activo \
+    && mkdir -p /app /data/projects /data/config /data/cache /tmp/runtime-activo \
     && chown -R activo:activo /data /tmp/runtime-activo
 
 WORKDIR /app

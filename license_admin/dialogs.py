@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
-    QTabWidget,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -32,22 +32,29 @@ from license_admin.google_sheets import extract_spreadsheet_id
 from license_admin.icons import svg_icon
 from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.key_store import KeyPasswordRequiredError, inspect_key_pair
+from license_admin.localization import text
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.service_account_store import inspect_service_account
 from license_admin.settings import AdminSettings
+from license_admin.window_chrome import (
+    FramelessResizeController,
+    FramelessTabHeader,
+    enable_frameless_window,
+)
 
 
 class LicenseEditorDialog(QDialog):
     def __init__(self, parent: QWidget, record: LicenseRecord | None = None) -> None:
         super().__init__(parent)
         self._record = record
-        self.setWindowTitle("Gia hạn / cập nhật license" if record else "Tạo license mới")
+        self.setWindowTitle(
+            text("editor.edit_title") if record else text("editor.new_title")
+        )
         self.setMinimumWidth(560)
 
         layout = QVBoxLayout(self)
         intro = QLabel(
-            "JWT mới sẽ được ký ở máy này. Thay đổi chỉ được công khai sau khi "
-            "bấm “Đồng bộ lên Sheet”."
+            text("editor.intro")
         )
         intro.setWordWrap(True)
         intro.setObjectName("muted")
@@ -55,9 +62,9 @@ class LicenseEditorDialog(QDialog):
 
         form = QFormLayout()
         self.username_edit = QLineEdit(record.username if record else "")
-        self.username_edit.setPlaceholderText("Tên hoặc bí danh khách hàng")
+        self.username_edit.setPlaceholderText(text("editor.username_placeholder"))
         self.hwid_edit = QLineEdit(record.hwid if record else "")
-        self.hwid_edit.setPlaceholderText("64 ký tự hexadecimal")
+        self.hwid_edit.setPlaceholderText(text("editor.hwid_placeholder"))
         self.hwid_edit.setMaxLength(64)
         self.expiry_edit = QDateEdit()
         self.expiry_edit.setCalendarPopup(True)
@@ -76,14 +83,19 @@ class LicenseEditorDialog(QDialog):
             if existing >= self.expiry_edit.minimumDate():
                 default_expiry = min(existing, self.expiry_edit.maximumDate())
         self.expiry_edit.setDate(default_expiry)
-        form.addRow("Người dùng", self.username_edit)
-        form.addRow("HWID thiết bị", self.hwid_edit)
-        form.addRow("Hết hạn cuối ngày (UTC)", self.expiry_edit)
+        form.addRow(text("editor.username"), self.username_edit)
+        form.addRow(text("editor.hwid"), self.hwid_edit)
+        form.addRow(text("editor.expiry"), self.expiry_edit)
         layout.addLayout(form)
 
         presets = QHBoxLayout()
-        presets.addWidget(QLabel("Chọn nhanh:"))
-        for days, label in ((30, "30 ngày"), (90, "90 ngày"), (365, "1 năm"), (730, "2 năm")):
+        presets.addWidget(QLabel(text("editor.quick")))
+        for days, label in (
+            (30, text("editor.30_days")),
+            (90, text("editor.90_days")),
+            (365, text("editor.1_year")),
+            (730, text("editor.2_years")),
+        ):
             button = QPushButton(label)
             button.setIcon(svg_icon("clock", 16))
             button.clicked.connect(
@@ -100,10 +112,13 @@ class LicenseEditorDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel
         )
         save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
-        save_button.setText("Ký và lưu")
+        save_button.setText(text("editor.sign_save"))
         save_button.setIcon(svg_icon("check", 16))
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setIcon(
             svg_icon("close", 16)
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+            text("common.cancel")
         )
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
@@ -113,12 +128,12 @@ class LicenseEditorDialog(QDialog):
         try:
             username = self.username_edit.text().strip()
             if not username or len(username) > 200:
-                raise LicenseIssueError("Tên người dùng phải có từ 1 đến 200 ký tự.")
+                raise LicenseIssueError(text("validation.username_length"))
             if any(ord(character) < 32 for character in username):
-                raise LicenseIssueError("Tên người dùng không được chứa ký tự điều khiển.")
+                raise LicenseIssueError(text("validation.username_control"))
             normalize_hwid(self.hwid_edit.text())
         except LicenseIssueError as exc:
-            QMessageBox.warning(self, "Dữ liệu chưa hợp lệ", str(exc))
+            QMessageBox.warning(self, text("message.invalid_data"), str(exc))
             return
         self.accept()
 
@@ -146,112 +161,136 @@ class SettingsDialog(QDialog):
         record_count: int,
     ) -> None:
         super().__init__(parent)
+        enable_frameless_window(self)
+        self.setObjectName("settingsDialog")
         self._project_directory = project_directory
         self._record_count = record_count
         self._validated_key_paths: tuple[Path, Path] | None = None
-        self.setWindowTitle("Cài đặt License Admin")
+        self.setWindowTitle(text("settings.title"))
         self.setMinimumSize(720, 500)
         layout = QVBoxLayout(self)
-        tabs = QTabWidget()
-        layout.addWidget(tabs)
+        layout.setContentsMargins(1, 1, 1, 1)
+        layout.setSpacing(0)
+
+        self.settings_tab_header = FramelessTabHeader(self)
+        layout.addWidget(self.settings_tab_header)
+        body = QWidget()
+        body.setObjectName("settingsBody")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(10, 8, 10, 10)
+        body_layout.setSpacing(8)
+        self.settings_pages = QStackedWidget()
+        self.settings_pages.setObjectName("settingsPages")
+        self.settings_tab_header.current_changed.connect(
+            self.settings_pages.setCurrentIndex
+        )
+        body_layout.addWidget(self.settings_pages, 1)
+        layout.addWidget(body, 1)
 
         files_tab = QWidget()
         files_form = QFormLayout(files_tab)
         self.project_name_edit = QLineEdit(values.project_name)
         self.project_id_edit = QLineEdit(values.project_id)
         self.project_id_edit.setReadOnly(True)
-        files_form.addRow("Tên dự án", self.project_name_edit)
-        files_form.addRow("Project ID", self.project_id_edit)
+        files_form.addRow(text("settings.project_name"), self.project_name_edit)
+        files_form.addRow(text("settings.project_id"), self.project_id_edit)
         self.local_csv_edit = self._path_field(
             files_form,
-            "Dữ liệu quản trị",
+            text("settings.admin_data"),
             values.local_csv_path,
-            "CSV (*.csv);;Tất cả file (*)",
+            f"CSV (*.csv);;{text('common.all_files')}",
             save=True,
         )
         self.signing_key_edit = self._path_field(
             files_form,
-            "RSA private key",
+            text("settings.private_key"),
             values.signing_key_path,
-            "PEM (*.pem);;Tất cả file (*)",
+            f"PEM (*.pem);;{text('common.all_files')}",
         )
         self.public_key_edit = self._path_field(
             files_form,
-            "RSA public key",
+            text("settings.public_key"),
             values.public_key_path,
-            "PEM (*.pem);;Tất cả file (*)",
+            f"PEM (*.pem);;{text('common.all_files')}",
         )
-        self.import_keys_button = QPushButton("Nhập cặp key vào project…")
+        self.import_keys_button = QPushButton(text("settings.import_keys"))
         self.import_keys_button.setObjectName("importProjectKeys")
         self.import_keys_button.setIcon(svg_icon("key", 16))
         self.import_keys_button.clicked.connect(self._import_keys)
         files_form.addRow("", self.import_keys_button)
         key_warning = QLabel(
-            "Mỗi project có cặp key riêng. Nút nhập sẽ xác minh rồi sao chép key vào thư "
-            "mục project. Không tải private key lên Google Drive hoặc commit vào Git."
+            text("settings.key_note")
         )
         key_warning.setWordWrap(True)
         key_warning.setObjectName("warning")
         files_form.addRow("", key_warning)
-        tabs.addTab(files_tab, "File & khóa ký")
+        self.settings_pages.addWidget(files_tab)
+        self.settings_tab_header.add_tab(text("settings.tab_files"))
 
         google_tab = QWidget()
         google_form = QFormLayout(google_tab)
         self.sheet_id_edit = QLineEdit(values.spreadsheet_id)
-        self.sheet_id_edit.setPlaceholderText("ID hoặc URL của Google Sheet")
+        self.sheet_id_edit.setPlaceholderText(
+            text("settings.spreadsheet_placeholder")
+        )
         self.worksheet_edit = QLineEdit(values.worksheet)
         self.public_url_edit = QLineEdit(values.public_csv_url)
         self.public_url_edit.setPlaceholderText("https://docs.google.com/.../export?format=csv")
         self.credentials_edit = self._path_field(
             google_form,
-            "Service account JSON",
+            text("settings.service_json"),
             values.service_account_path,
-            "JSON (*.json);;Tất cả file (*)",
+            f"JSON (*.json);;{text('common.all_files')}",
         )
-        self.import_credentials_button = QPushButton("Nhập JSON vào project…")
+        self.import_credentials_button = QPushButton(text("settings.import_json"))
         self.import_credentials_button.setObjectName("importProjectCredentials")
         self.import_credentials_button.setIcon(svg_icon("upload", 16))
         self.import_credentials_button.clicked.connect(self._import_credentials)
         google_form.addRow("", self.import_credentials_button)
-        google_form.insertRow(0, "Spreadsheet", self.sheet_id_edit)
-        google_form.insertRow(1, "Tên worksheet", self.worksheet_edit)
-        google_form.insertRow(2, "Public CSV URL", self.public_url_edit)
+        google_form.insertRow(0, text("settings.spreadsheet"), self.sheet_id_edit)
+        google_form.insertRow(1, text("settings.worksheet"), self.worksheet_edit)
+        google_form.insertRow(2, text("settings.public_url"), self.public_url_edit)
         note = QLabel(
-            "Chia sẻ Sheet cho email client_email trong service-account JSON với quyền Editor. "
-            "Public CSV URL chỉ cần cho chức năng tải xuống không đăng nhập."
+            text("settings.google_note")
         )
         note.setWordWrap(True)
         note.setObjectName("muted")
         google_form.addRow("", note)
-        tabs.addTab(google_tab, "Google Sheets")
+        self.settings_pages.addWidget(google_tab)
+        self.settings_tab_header.add_tab(text("settings.tab_sheets"))
 
         claims_tab = QWidget()
         claims_form = QFormLayout(claims_tab)
         self.issuer_edit = QLineEdit(values.issuer)
         self.audience_edit = QLineEdit(values.audience)
-        claims_form.addRow("Issuer", self.issuer_edit)
-        claims_form.addRow("Audience", self.audience_edit)
+        claims_form.addRow(text("settings.issuer"), self.issuer_edit)
+        claims_form.addRow(text("settings.audience"), self.audience_edit)
         claims_note = QLabel(
-            "Hai giá trị này phải trùng với cấu hình được nhúng trong ứng dụng khách."
+            text("settings.claims_note")
         )
         claims_note.setWordWrap(True)
         claims_note.setObjectName("warning")
         claims_form.addRow("", claims_note)
-        tabs.addTab(claims_tab, "JWT claims")
+        self.settings_pages.addWidget(claims_tab)
+        self.settings_tab_header.add_tab(text("settings.tab_claims"))
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
         )
         save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
-        save_button.setText("Lưu cài đặt")
+        save_button.setText(text("settings.save"))
         save_button.setIcon(svg_icon("check", 16))
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setIcon(
             svg_icon("close", 16)
         )
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+            text("common.cancel")
+        )
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        body_layout.addWidget(buttons)
+        self._frameless_resize = FramelessResizeController(self, corner_radius=11)
 
     def _path_field(
         self,
@@ -266,17 +305,17 @@ class SettingsDialog(QDialog):
         row = QHBoxLayout(container)
         row.setContentsMargins(0, 0, 0, 0)
         edit = QLineEdit(str(value) if value else "")
-        button = QPushButton("Chọn…")
+        button = QPushButton(text("common.choose"))
         button.setIcon(svg_icon("folder", 16))
 
         def browse() -> None:
             if save:
                 chosen, _ = QFileDialog.getSaveFileName(
-                    self, "Chọn file", edit.text(), file_filter
+                    self, text("common.choose"), edit.text(), file_filter
                 )
             else:
                 chosen, _ = QFileDialog.getOpenFileName(
-                    self, "Chọn file", edit.text(), file_filter
+                    self, text("common.choose"), edit.text(), file_filter
                 )
             if chosen:
                 edit.setText(chosen)
@@ -290,7 +329,7 @@ class SettingsDialog(QDialog):
     def _import_keys(self) -> None:
         dialog = KeyImportDialog(
             self,
-            project_name=self.project_name_edit.text().strip() or "Project hiện tại",
+            project_name=self.project_name_edit.text().strip() or text("nav.current_project"),
             project_directory=self._project_directory,
             record_count=self._record_count,
         )
@@ -307,7 +346,7 @@ class SettingsDialog(QDialog):
     def _import_credentials(self) -> None:
         dialog = ServiceAccountImportDialog(
             self,
-            project_name=self.project_name_edit.text().strip() or "Project hiện tại",
+            project_name=self.project_name_edit.text().strip() or text("nav.current_project"),
             project_directory=self._project_directory,
         )
         if dialog.exec() != dialog.DialogCode.Accepted:
@@ -317,22 +356,26 @@ class SettingsDialog(QDialog):
 
     def _validate_and_accept(self) -> None:
         if not self.project_name_edit.text().strip():
-            QMessageBox.warning(self, "Thiếu cấu hình", "Tên dự án không được trống.")
+            QMessageBox.warning(self, text("message.missing_configuration"), text("settings.project_name"))
             return
         if not self.local_csv_edit.text().strip():
-            QMessageBox.warning(self, "Thiếu cấu hình", "Hãy chọn file dữ liệu quản trị.")
+            QMessageBox.warning(
+                self,
+                text("message.missing_configuration"),
+                text("validation.required", field=text("settings.admin_data")),
+            )
             return
         if not self.signing_key_edit.text().strip():
-            QMessageBox.warning(self, "Thiếu cấu hình", "Hãy chọn RSA private key.")
+            QMessageBox.warning(self, text("message.missing_configuration"), text("validation.required", field=text("settings.private_key")))
             return
         if not Path(self.signing_key_edit.text().strip()).is_file():
-            QMessageBox.warning(self, "Khóa ký không hợp lệ", "Không tìm thấy RSA private key.")
+            QMessageBox.warning(self, text("message.invalid_data"), text("validation.not_found", field=text("settings.private_key")))
             return
         if not self.public_key_edit.text().strip():
-            QMessageBox.warning(self, "Thiếu cấu hình", "Hãy chọn RSA public key.")
+            QMessageBox.warning(self, text("message.missing_configuration"), text("validation.required", field=text("settings.public_key")))
             return
         if not Path(self.public_key_edit.text().strip()).is_file():
-            QMessageBox.warning(self, "Public key không hợp lệ", "Không tìm thấy RSA public key.")
+            QMessageBox.warning(self, text("message.invalid_data"), text("validation.not_found", field=text("settings.public_key")))
             return
         private_path = Path(self.signing_key_edit.text().strip())
         public_path = Path(self.public_key_edit.text().strip())
@@ -346,8 +389,8 @@ class SettingsDialog(QDialog):
             except KeyPasswordRequiredError:
                 password, accepted = QInputDialog.getText(
                     self,
-                    "Xác minh private key",
-                    "Mật khẩu private key:",
+                    text("key.password_required"),
+                    text("key.password"),
                     QLineEdit.EchoMode.Password,
                 )
                 if not accepted:
@@ -359,27 +402,32 @@ class SettingsDialog(QDialog):
                         password=password.encode("utf-8"),
                     )
                 except LicenseIssueError as exc:
-                    QMessageBox.warning(self, "Cặp key không hợp lệ", str(exc))
+                    QMessageBox.warning(self, text("key.invalid_pair"), str(exc))
                     return
             except LicenseIssueError as exc:
-                QMessageBox.warning(self, "Cặp key không hợp lệ", str(exc))
+                QMessageBox.warning(self, text("key.invalid_pair"), str(exc))
                 return
         sheet_value = self.sheet_id_edit.text().strip()
         if sheet_value:
             try:
                 extract_spreadsheet_id(sheet_value)
             except LicenseIssueError as exc:
-                QMessageBox.warning(self, "Google Sheet không hợp lệ", str(exc))
+                QMessageBox.warning(self, text("message.invalid_data"), str(exc))
                 return
         if not self.worksheet_edit.text().strip():
-            QMessageBox.warning(self, "Thiếu cấu hình", "Tên worksheet không được trống.")
+            QMessageBox.warning(self, text("message.missing_configuration"), text("validation.required", field=text("settings.worksheet")))
             return
         if not self.issuer_edit.text().strip() or not self.audience_edit.text().strip():
-            QMessageBox.warning(self, "Thiếu cấu hình", "Issuer và audience không được trống.")
+            fields = f"{text('settings.issuer')} / {text('settings.audience')}"
+            QMessageBox.warning(
+                self,
+                text("message.missing_configuration"),
+                text("validation.required", field=fields),
+            )
             return
         public_url = self.public_url_edit.text().strip()
         if public_url and not public_url.startswith("https://"):
-            QMessageBox.warning(self, "URL không hợp lệ", "Public CSV URL phải dùng HTTPS.")
+            QMessageBox.warning(self, text("message.invalid_data"), text("validation.https"))
             return
         credentials = self.credentials_edit.text().strip()
         if credentials:
@@ -388,7 +436,7 @@ class SettingsDialog(QDialog):
             except LicenseIssueError as exc:
                 QMessageBox.warning(
                     self,
-                    "Service account không hợp lệ",
+                    text("credential.invalid"),
                     str(exc),
                 )
                 return
@@ -416,34 +464,37 @@ class SettingsDialog(QDialog):
 class RecordDetailsDialog(QDialog):
     def __init__(self, parent: QWidget, record: LicenseRecord) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Chi tiết license")
+        self.setWindowTitle(text("details.title"))
         self.resize(760, 520)
         layout = QVBoxLayout(self)
         form = QFormLayout()
-        form.addRow("Người dùng", QLabel(record.username or "—"))
+        form.addRow(text("editor.username"), QLabel(record.username or "—"))
         form.addRow("HWID", QLabel(record.hwid))
         form.addRow("JTI", QLabel(record.jti or "—"))
         if record.parse_error:
             error = QLabel(record.parse_error)
             error.setWordWrap(True)
             error.setObjectName("danger")
-            form.addRow("Lỗi", error)
+            form.addRow(text("details.error"), error)
         layout.addLayout(form)
         token = QTextEdit(record.token)
         token.setReadOnly(True)
-        layout.addWidget(QLabel("JWT token"))
+        layout.addWidget(QLabel(text("details.token")))
         layout.addWidget(token, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         copy_hwid = buttons.addButton(
-            "Sao chép HWID", QDialogButtonBox.ButtonRole.ActionRole
+            text("details.copy_hwid"), QDialogButtonBox.ButtonRole.ActionRole
         )
         copy_token = buttons.addButton(
-            "Sao chép token", QDialogButtonBox.ButtonRole.ActionRole
+            text("details.copy_token"), QDialogButtonBox.ButtonRole.ActionRole
         )
         copy_hwid.setIcon(svg_icon("copy", 16))
         copy_token.setIcon(svg_icon("copy", 16))
         buttons.button(QDialogButtonBox.StandardButton.Close).setIcon(
             svg_icon("close", 16)
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText(
+            text("common.close")
         )
         copy_hwid.clicked.connect(
             lambda: self._copy(record.hwid)

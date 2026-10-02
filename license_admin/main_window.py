@@ -19,7 +19,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -27,7 +26,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -57,8 +55,16 @@ from license_admin.domain import (
     validate_record_signatures,
 )
 from license_admin.google_sheets import GoogleSheetsClient, download_public_records
+from license_admin.flag_icons import FlagIconLoader
 from license_admin.icons import icon_pixmap, svg_icon
 from license_admin.key_import_dialog import KeyImportDialog
+from license_admin.localization import (
+    LANGUAGES,
+    current_language,
+    set_language,
+    text,
+)
+from license_admin.popover import PopoverSelect, RoundedMenu
 from license_admin.project_config import (
     export_project_config,
     import_project_config,
@@ -70,6 +76,13 @@ from license_admin.storage import LicenseRepository
 from license_admin.toast import Toast
 from license_admin.theme import ADMIN_STYLESHEET
 from license_admin.worker import OperationThread
+from license_admin.window_chrome import (
+    APP_HEADER_HEIGHT,
+    DraggableFrame,
+    FramelessResizeController,
+    WindowChromeBar,
+    enable_frameless_window,
+)
 from migrate_license_csv import migrate_legacy_csv
 
 
@@ -81,6 +94,7 @@ class LicenseAdminWindow(QMainWindow):
         qsettings: QSettings | None = None,
     ) -> None:
         super().__init__()
+        enable_frameless_window(self)
         self.resize(1320, 820)
         self.setMinimumSize(980, 640)
         icon_path = APPLICATION_ROOT / "app.ico"
@@ -88,6 +102,7 @@ class LicenseAdminWindow(QMainWindow):
             self.setWindowIcon(QIcon(str(icon_path)))
 
         self._qsettings = qsettings or QSettings("LicenseTools", "LicenseAdmin")
+        set_language(str(self._qsettings.value("ui/language", "en")))
         self._project_store = project_store or ProjectStore()
         default_profile = self._project_store.ensure_default()
         active_project = str(
@@ -105,77 +120,78 @@ class LicenseAdminWindow(QMainWindow):
 
         self._create_actions()
         self._build_ui()
+        self._frameless_resize = FramelessResizeController(self)
         self._create_menus()
         self._load_local(show_missing=False)
         self._refresh_view()
 
     def _create_actions(self) -> None:
-        self.new_action = QAction(svg_icon("plus"), "Tạo license", self)
+        self.new_action = QAction(svg_icon("plus"), text("action.new_license"), self)
         self.new_action.setShortcut("Ctrl+N")
         self.new_action.triggered.connect(self._add_license)
-        self.edit_action = QAction(svg_icon("edit"), "Gia hạn / sửa", self)
+        self.edit_action = QAction(svg_icon("edit"), text("action.edit_license"), self)
         self.edit_action.setShortcut("Ctrl+E")
         self.edit_action.triggered.connect(self._edit_license)
-        self.revoke_action = QAction(svg_icon("trash"), "Thu hồi", self)
+        self.revoke_action = QAction(svg_icon("trash"), text("action.revoke"), self)
         self.revoke_action.setShortcut("Delete")
         self.revoke_action.triggered.connect(self._revoke_license)
-        self.details_action = QAction(svg_icon("eye"), "Xem chi tiết", self)
+        self.details_action = QAction(svg_icon("eye"), text("action.details"), self)
         self.details_action.triggered.connect(self._show_details)
-        self.pull_action = QAction(svg_icon("download"), "Tải từ Sheet", self)
+        self.pull_action = QAction(svg_icon("download"), text("action.pull_sheet"), self)
         self.pull_action.setShortcut("Ctrl+Shift+D")
         self.pull_action.triggered.connect(self._pull_sheet)
-        self.push_action = QAction(svg_icon("upload"), "Đồng bộ lên Sheet", self)
+        self.push_action = QAction(svg_icon("upload"), text("action.push_sheet"), self)
         self.push_action.setShortcut("Ctrl+Shift+U")
         self.push_action.triggered.connect(self._push_sheet)
-        self.format_action = QAction(svg_icon("format"), "Format Sheet", self)
+        self.format_action = QAction(svg_icon("format"), text("action.format_sheet"), self)
         self.format_action.triggered.connect(self._format_sheet)
-        self.test_action = QAction(svg_icon("plug"), "Kiểm tra kết nối", self)
+        self.test_action = QAction(svg_icon("plug"), text("action.test_connection"), self)
         self.test_action.triggered.connect(self._test_connection)
-        self.open_sheet_action = QAction(svg_icon("external"), "Mở Google Sheet", self)
+        self.open_sheet_action = QAction(svg_icon("external"), text("action.open_sheet"), self)
         self.open_sheet_action.triggered.connect(self._open_sheet)
-        self.settings_action = QAction(svg_icon("settings"), "Cài đặt", self)
+        self.settings_action = QAction(svg_icon("settings"), text("action.settings"), self)
         self.settings_action.setShortcut("Ctrl+,")
         self.settings_action.triggered.connect(self._show_settings)
-        self.new_project_action = QAction(svg_icon("plus"), "Thêm dự án…", self)
+        self.new_project_action = QAction(svg_icon("plus"), text("action.new_project"), self)
         self.new_project_action.triggered.connect(self._create_project)
         self.open_project_folder_action = QAction(
-            svg_icon("folder"), "Mở thư mục dự án", self
+            svg_icon("folder"), text("action.open_project_folder"), self
         )
         self.open_project_folder_action.triggered.connect(self._open_project_folder)
         self.import_project_keys_action = QAction(
-            svg_icon("key"), "Nhập cặp key…", self
+            svg_icon("key"), text("action.import_keys"), self
         )
         self.import_project_keys_action.triggered.connect(self._import_project_keys)
         self.import_google_credentials_action = QAction(
-            svg_icon("upload"), "Nhập Google service JSON…", self
+            svg_icon("upload"), text("action.import_credentials"), self
         )
         self.import_google_credentials_action.triggered.connect(
             self._import_google_credentials
         )
         self.import_project_config_action = QAction(
-            svg_icon("import"), "Nhập cấu hình project…", self
+            svg_icon("import"), text("action.import_project_config"), self
         )
         self.import_project_config_action.triggered.connect(
             self._import_project_config
         )
         self.export_project_config_action = QAction(
-            svg_icon("export"), "Xuất cấu hình project…", self
+            svg_icon("export"), text("action.export_project_config"), self
         )
         self.export_project_config_action.triggered.connect(
             self._export_project_config
         )
         self.import_signed_action = QAction(
-            svg_icon("import"), "Nhập signed CSV…", self
+            svg_icon("import"), text("action.import_signed"), self
         )
         self.import_signed_action.triggered.connect(self._import_signed)
         self.import_legacy_action = QAction(
-            svg_icon("migration"), "Nhập legacy CSV…", self
+            svg_icon("migration"), text("action.import_legacy"), self
         )
         self.import_legacy_action.triggered.connect(self._import_legacy)
-        self.export_action = QAction(svg_icon("export"), "Xuất signed CSV…", self)
+        self.export_action = QAction(svg_icon("export"), text("action.export_signed"), self)
         self.export_action.setShortcut("Ctrl+S")
         self.export_action.triggered.connect(self._export_signed)
-        self.quit_action = QAction(svg_icon("close"), "Thoát", self)
+        self.quit_action = QAction(svg_icon("close"), text("action.quit"), self)
         self.quit_action.setShortcut("Ctrl+Q")
         self.quit_action.triggered.connect(self.close)
 
@@ -190,14 +206,37 @@ class LicenseAdminWindow(QMainWindow):
         self.sidebar.setObjectName("sidebar")
         self.sidebar.setFixedWidth(220)
         sidebar_layout = QVBoxLayout(self.sidebar)
-        sidebar_layout.setContentsMargins(10, 0, 10, 12)
-        sidebar_layout.setSpacing(5)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
+
+        self.window_chrome = WindowChromeBar(self)
+        self._flag_icons = FlagIconLoader(self)
+        self._flag_icons.icon_loaded.connect(self._flag_icon_loaded)
+        self.language_selector = PopoverSelect()
+        self.language_selector.setObjectName("languageSelect")
+        self.language_selector.setFixedSize(112, 26)
+        self.language_selector.setIconSize(QSize(20, 14))
+        for option in LANGUAGES:
+            self.language_selector.add_item(
+                option.native_name,
+                option.code,
+                icon=self._flag_icons.icon(option.country_code),
+            )
+        self.language_selector.set_current_data(current_language())
+        self.language_selector.selection_changed.connect(self._language_selected)
+        self.window_chrome.add_trailing_widget(self.language_selector)
+        sidebar_layout.addWidget(self.window_chrome)
+
+        sidebar_content = QWidget()
+        sidebar_content_layout = QVBoxLayout(sidebar_content)
+        sidebar_content_layout.setContentsMargins(10, 0, 10, 12)
+        sidebar_content_layout.setSpacing(5)
 
         brand = QFrame()
         brand.setObjectName("brandBlock")
-        brand.setFixedHeight(72)
+        brand.setFixedHeight(62)
         brand_layout = QHBoxLayout(brand)
-        brand_layout.setContentsMargins(2, 12, 2, 12)
+        brand_layout.setContentsMargins(2, 7, 2, 9)
         brand_layout.setSpacing(10)
         brand_mark = QLabel("L")
         brand_mark.setObjectName("brandMark")
@@ -213,19 +252,19 @@ class LicenseAdminWindow(QMainWindow):
         brand_copy.addWidget(brand_subtitle)
         brand_layout.addWidget(brand_mark)
         brand_layout.addLayout(brand_copy, 1)
-        sidebar_layout.addWidget(brand)
+        sidebar_content_layout.addWidget(brand)
 
-        nav_label = QLabel("ĐIỀU HƯỚNG")
-        nav_label.setObjectName("navSection")
-        sidebar_layout.addWidget(nav_label)
-        self.overview_button = SidebarButton("Tổng quan", "grid", active=True)
+        self.nav_label = QLabel(text("nav.navigation"))
+        self.nav_label.setObjectName("navSection")
+        sidebar_content_layout.addWidget(self.nav_label)
+        self.overview_button = SidebarButton(text("nav.overview"), "grid", active=True)
         self.overview_button.clicked.connect(self._focus_dashboard)
-        self.new_sidebar_button = SidebarButton("Tạo license", "plus")
+        self.new_sidebar_button = SidebarButton(text("action.new_license"), "plus")
         self.new_sidebar_button.clicked.connect(self.new_action.trigger)
-        self.license_sidebar_menu = SidebarMenuButton("License", "key")
-        self.sheet_sidebar_menu = SidebarMenuButton("Google Sheets", "cloud")
-        self.data_sidebar_menu = SidebarMenuButton("Dữ liệu", "database")
-        self.settings_sidebar_button = SidebarButton("Cài đặt", "settings")
+        self.license_sidebar_menu = SidebarMenuButton(text("nav.license"), "key")
+        self.sheet_sidebar_menu = SidebarMenuButton(text("nav.sheets"), "cloud")
+        self.data_sidebar_menu = SidebarMenuButton(text("nav.data"), "database")
+        self.settings_sidebar_button = SidebarButton(text("action.settings"), "settings")
         self.settings_sidebar_button.clicked.connect(self.settings_action.trigger)
         for button in (
             self.overview_button,
@@ -235,22 +274,23 @@ class LicenseAdminWindow(QMainWindow):
             self.data_sidebar_menu,
             self.settings_sidebar_button,
         ):
-            sidebar_layout.addWidget(button)
-        sidebar_layout.addStretch(1)
+            sidebar_content_layout.addWidget(button)
+        sidebar_content_layout.addStretch(1)
 
-        project_label = QLabel("PROJECT HIỆN TẠI")
-        project_label.setObjectName("navSection")
-        sidebar_layout.addWidget(project_label)
+        self.project_label = QLabel(text("nav.current_project"))
+        self.project_label.setObjectName("navSection")
+        sidebar_content_layout.addWidget(self.project_label)
         self.project_identity = ProjectIdentityCard()
         self.project_identity.set_project(
             self._settings.project_name,
             self._settings.project_id,
         )
-        sidebar_layout.addWidget(self.project_identity)
+        sidebar_content_layout.addWidget(self.project_identity)
         self.project_sidebar_menu = SidebarMenuButton(
-            "Quản lý project", "folder-project"
+            text("nav.manage_projects"), "folder-project"
         )
-        sidebar_layout.addWidget(self.project_sidebar_menu)
+        sidebar_content_layout.addWidget(self.project_sidebar_menu)
+        sidebar_layout.addWidget(sidebar_content, 1)
         shell.addWidget(self.sidebar)
 
         self.main_surface = QWidget()
@@ -259,19 +299,19 @@ class LicenseAdminWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        self.top_bar = QFrame()
+        self.top_bar = DraggableFrame()
         self.top_bar.setObjectName("topBar")
-        self.top_bar.setFixedHeight(58)
+        self.top_bar.setFixedHeight(APP_HEADER_HEIGHT)
         top_bar_layout = QHBoxLayout(self.top_bar)
-        top_bar_layout.setContentsMargins(20, 9, 18, 9)
-        top_bar_layout.setSpacing(12)
+        top_bar_layout.setContentsMargins(14, 8, 12, 8)
+        top_bar_layout.setSpacing(10)
         top_bar_icon = QLabel()
         top_bar_icon.setPixmap(icon_pixmap("grid", 17))
         top_bar_icon.setFixedSize(17, 17)
         top_bar_layout.addWidget(top_bar_icon)
-        top_bar_title = QLabel("Dashboard")
-        top_bar_title.setObjectName("topBarTitle")
-        top_bar_layout.addWidget(top_bar_title)
+        self.top_bar_title = QLabel(text("dashboard.title"))
+        self.top_bar_title.setObjectName("topBarTitle")
+        top_bar_layout.addWidget(self.top_bar_title)
         top_bar_layout.addSpacing(10)
 
         self.top_controls = QWidget()
@@ -285,7 +325,7 @@ class LicenseAdminWindow(QMainWindow):
         filters.setSpacing(10)
         self.search_edit = QLineEdit()
         self.search_edit.setObjectName("dashboardSearch")
-        self.search_edit.setPlaceholderText("Tìm theo người dùng, HWID, JTI hoặc token…")
+        self.search_edit.setPlaceholderText(text("dashboard.search"))
         self._search_icon_action = self.search_edit.addAction(
             svg_icon("search", 16), QLineEdit.ActionPosition.LeadingPosition
         )
@@ -300,23 +340,20 @@ class LicenseAdminWindow(QMainWindow):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
-        self.status_combo = QComboBox()
-        self.status_combo.setMinimumWidth(124)
-        self.status_combo.addItem("Tất cả trạng thái", None)
-        self.status_combo.addItem("Đang hoạt động", LicenseStatus.ACTIVE)
-        self.status_combo.addItem("Sắp hết hạn", LicenseStatus.EXPIRING)
-        self.status_combo.addItem("Đã hết hạn", LicenseStatus.EXPIRED)
-        self.status_combo.addItem("Chưa hiệu lực", LicenseStatus.FUTURE)
-        self.status_combo.addItem("Dữ liệu lỗi", LicenseStatus.INVALID)
-        self.project_combo = QComboBox()
+        self.status_combo = PopoverSelect()
+        self.status_combo.setMinimumWidth(140)
+        self.status_combo.setFixedHeight(36)
+        self._populate_status_selector()
+        self.project_combo = PopoverSelect()
         self.project_combo.setObjectName("projectCombo")
         self.project_combo.setMinimumWidth(130)
         self.project_combo.setMaximumWidth(190)
+        self.project_combo.setFixedHeight(36)
         filters.addWidget(self.search_edit, 1)
         filters.addWidget(self.status_combo)
         filters.addWidget(self.project_combo)
         top_bar_layout.addWidget(self.top_controls, 1)
-        self.primary_action_button = QPushButton("Tạo license")
+        self.primary_action_button = QPushButton(text("action.new_license"))
         self.primary_action_button.setObjectName("primaryButton")
         self.primary_action_button.setFixedWidth(128)
         self.primary_action_button.setIcon(svg_icon("plus-dark"))
@@ -331,32 +368,32 @@ class LicenseAdminWindow(QMainWindow):
         self.content_surface = QWidget()
         self.content_surface.setObjectName("contentSurface")
         root = QVBoxLayout(self.content_surface)
-        root.setContentsMargins(18, 14, 18, 18)
-        root.setSpacing(12)
+        root.setContentsMargins(12, 10, 12, 12)
+        root.setSpacing(10)
 
         self.metrics_layout = QHBoxLayout()
-        self.metrics_layout.setSpacing(10)
+        self.metrics_layout.setSpacing(8)
         self.total_card = MetricCard(
-            "Tổng license",
-            "Trong profile hiện tại",
+            text("metric.total"),
+            text("metric.total_note"),
             "total",
             "#25bdea",
         )
         self.active_card = MetricCard(
-            "Đang hoạt động",
-            "License còn hiệu lực",
+            text("status.active"),
+            text("metric.active_note"),
             "check",
             "#32d296",
         )
         self.expiring_card = MetricCard(
-            "Sắp hết hạn",
-            "Còn tối đa 30 ngày",
+            text("status.expiring"),
+            text("metric.expiring_note"),
             "clock",
             "#f4bc42",
         )
         self.expired_card = MetricCard(
-            "Hết hạn / lỗi",
-            "Cần kiểm tra hoặc cấp lại",
+            text("metric.expired_error"),
+            text("metric.expired_note"),
             "alert",
             "#f05d6c",
         )
@@ -388,18 +425,19 @@ class LicenseAdminWindow(QMainWindow):
         )
         table_copy = QVBoxLayout()
         table_copy.setSpacing(1)
-        table_title = QLabel("Danh sách license")
-        table_title.setObjectName("panelTitle")
-        table_subtitle = QLabel("Double-click một dòng để gia hạn hoặc chỉnh sửa")
-        table_subtitle.setObjectName("panelSubtitle")
-        table_copy.addWidget(table_title)
-        table_copy.addWidget(table_subtitle)
+        self.table_title = QLabel(text("table.title"))
+        self.table_title.setObjectName("panelTitle")
+        self.table_subtitle = QLabel(text("table.subtitle"))
+        self.table_subtitle.setObjectName("panelSubtitle")
+        table_copy.addWidget(self.table_title)
+        table_copy.addWidget(self.table_subtitle)
         table_header_layout.addLayout(table_copy)
         table_header_layout.addStretch(1)
         self.visible_label = QLabel()
         self.visible_label.setObjectName("muted")
         table_header_layout.addWidget(self.visible_label)
-        self.sync_badge = QLabel("Chưa đồng bộ")
+        self._sync_badge_state = "unsynced"
+        self.sync_badge = QLabel(text("sync.unsynced"))
         self.sync_badge.setObjectName("syncBadge")
         self.sync_badge.setMinimumWidth(96)
         self.sync_badge.setMaximumWidth(126)
@@ -450,12 +488,12 @@ class LicenseAdminWindow(QMainWindow):
             lambda text: self._search_clear_action.setVisible(bool(text))
         )
         self.search_edit.textChanged.connect(lambda _text: self._refresh_visible_count())
-        self.status_combo.currentIndexChanged.connect(self._filter_status_changed)
+        self.status_combo.selection_changed.connect(self._filter_status_changed)
         self.proxy_model.rowsInserted.connect(lambda *_args: self._refresh_visible_count())
         self.proxy_model.rowsRemoved.connect(lambda *_args: self._refresh_visible_count())
         self.proxy_model.modelReset.connect(self._refresh_visible_count)
         self.table.selectionModel().selectionChanged.connect(self._selection_changed)
-        self.project_combo.currentIndexChanged.connect(self._project_combo_changed)
+        self.project_combo.selection_changed.connect(self._project_combo_changed)
         self.setCentralWidget(central)
         self.toast = Toast(self)
         self.statusBar().hide()
@@ -463,18 +501,18 @@ class LicenseAdminWindow(QMainWindow):
 
     def _create_menus(self) -> None:
         self.menuBar().hide()
-        self.project_menu = QMenu("Dự án", self)
+        self.project_menu = RoundedMenu(text("nav.manage_projects"), self)
         self._rebuild_project_menu()
-        self.file_menu = QMenu("Dữ liệu", self)
+        self.file_menu = RoundedMenu(text("nav.data"), self)
         self.file_menu.addAction(self.import_signed_action)
         self.file_menu.addAction(self.import_legacy_action)
         self.file_menu.addAction(self.export_action)
-        self.license_menu = QMenu("License", self)
+        self.license_menu = RoundedMenu(text("nav.license"), self)
         self.license_menu.addAction(self.new_action)
         self.license_menu.addAction(self.edit_action)
         self.license_menu.addAction(self.revoke_action)
         self.license_menu.addAction(self.details_action)
-        self.sheet_menu = QMenu("Google Sheets", self)
+        self.sheet_menu = RoundedMenu(text("nav.sheets"), self)
         self.sheet_menu.addAction(self.pull_action)
         self.sheet_menu.addAction(self.push_action)
         self.sheet_menu.addAction(self.format_action)
@@ -497,6 +535,104 @@ class LicenseAdminWindow(QMainWindow):
                 self.quit_action,
             )
         )
+
+    def _populate_status_selector(self) -> None:
+        selected = self.status_combo.current_data()
+        self.status_combo.clear_items()
+        for label_key, status in (
+            ("status.all", None),
+            ("status.active", LicenseStatus.ACTIVE),
+            ("status.expiring", LicenseStatus.EXPIRING),
+            ("status.expired", LicenseStatus.EXPIRED),
+            ("status.future", LicenseStatus.FUTURE),
+            ("status.invalid", LicenseStatus.INVALID),
+        ):
+            self.status_combo.add_item(text(label_key), status)
+        self.status_combo.set_current_data(selected)
+
+    def _language_selected(self, value: object) -> None:
+        if not isinstance(value, str):
+            return
+        code = set_language(value)
+        self._qsettings.setValue("ui/language", code)
+        self._retranslate_ui()
+
+    def _flag_icon_loaded(self, country_code: str, icon: QIcon) -> None:
+        option = next(
+            (item for item in LANGUAGES if item.country_code == country_code),
+            None,
+        )
+        if option is not None:
+            self.language_selector.set_item_icon(option.code, icon)
+
+    def _retranslate_ui(self) -> None:
+        for action, key in (
+            (self.new_action, "action.new_license"),
+            (self.edit_action, "action.edit_license"),
+            (self.revoke_action, "action.revoke"),
+            (self.details_action, "action.details"),
+            (self.pull_action, "action.pull_sheet"),
+            (self.push_action, "action.push_sheet"),
+            (self.format_action, "action.format_sheet"),
+            (self.test_action, "action.test_connection"),
+            (self.open_sheet_action, "action.open_sheet"),
+            (self.settings_action, "action.settings"),
+            (self.new_project_action, "action.new_project"),
+            (self.open_project_folder_action, "action.open_project_folder"),
+            (self.import_project_keys_action, "action.import_keys"),
+            (self.import_google_credentials_action, "action.import_credentials"),
+            (self.import_project_config_action, "action.import_project_config"),
+            (self.export_project_config_action, "action.export_project_config"),
+            (self.import_signed_action, "action.import_signed"),
+            (self.import_legacy_action, "action.import_legacy"),
+            (self.export_action, "action.export_signed"),
+            (self.quit_action, "action.quit"),
+        ):
+            action.setText(text(key))
+        self.window_chrome.retranslate()
+        self.nav_label.setText(text("nav.navigation"))
+        self.overview_button.setText(text("nav.overview"))
+        self.new_sidebar_button.setText(text("action.new_license"))
+        self.license_sidebar_menu.setText(text("nav.license"))
+        self.sheet_sidebar_menu.setText(text("nav.sheets"))
+        self.data_sidebar_menu.setText(text("nav.data"))
+        self.settings_sidebar_button.setText(text("action.settings"))
+        self.project_label.setText(text("nav.current_project"))
+        self.project_sidebar_menu.setText(text("nav.manage_projects"))
+        self.top_bar_title.setText(text("dashboard.title"))
+        self.search_edit.setPlaceholderText(text("dashboard.search"))
+        self.primary_action_button.setText(text("action.new_license"))
+        self.total_card.set_texts(text("metric.total"), text("metric.total_note"))
+        self.active_card.set_texts(text("status.active"), text("metric.active_note"))
+        self.expiring_card.set_texts(
+            text("status.expiring"), text("metric.expiring_note")
+        )
+        self.expired_card.set_texts(
+            text("metric.expired_error"), text("metric.expired_note")
+        )
+        self.table_title.setText(text("table.title"))
+        self.table_subtitle.setText(text("table.subtitle"))
+        self.project_menu.setTitle(text("nav.manage_projects"))
+        self.file_menu.setTitle(text("nav.data"))
+        self.license_menu.setTitle(text("nav.license"))
+        self.sheet_menu.setTitle(text("nav.sheets"))
+        self._populate_status_selector()
+        self.table_model.retranslate()
+        self._set_sync_badge(self._sync_badge_state)
+        self._refresh_visible_count()
+        self._rebuild_project_menu()
+
+    def _set_sync_badge(self, state: str) -> None:
+        self._sync_badge_state = state
+        key = {
+            "unsynced": "sync.unsynced",
+            "dirty": "sync.dirty",
+            "synced": "sync.synced",
+        }.get(state, "sync.unsynced")
+        self.sync_badge.setText(text(key))
+        self.sync_badge.setProperty("synced", state == "synced")
+        self.sync_badge.style().unpolish(self.sync_badge)
+        self.sync_badge.style().polish(self.sync_badge)
 
     def _set_project_identity(self) -> None:
         self.setWindowTitle(f"{self._settings.project_name} — License Admin")
@@ -534,19 +670,13 @@ class LicenseAdminWindow(QMainWindow):
         self.project_menu.addSeparator()
         self.project_menu.addAction(self.open_project_folder_action)
         self.project_menu.addAction(self.settings_action)
-        self.project_combo.blockSignals(True)
-        self.project_combo.clear()
-        active_index = 0
-        for index, profile in enumerate(profiles):
-            self.project_combo.addItem(profile.project_name, profile.project_id)
-            if profile.project_id == self._settings.project_id:
-                active_index = index
-        self.project_combo.setCurrentIndex(active_index)
-        self.project_combo.blockSignals(False)
+        self.project_combo.clear_items()
+        for profile in profiles:
+            self.project_combo.add_item(profile.project_name, profile.project_id)
+        self.project_combo.set_current_data(self._settings.project_id)
         self._set_project_identity()
 
-    def _project_combo_changed(self, index: int) -> None:
-        project_id = self.project_combo.itemData(index)
+    def _project_combo_changed(self, project_id: object) -> None:
         if isinstance(project_id, str):
             self._switch_project(project_id)
 
@@ -556,18 +686,18 @@ class LicenseAdminWindow(QMainWindow):
     def _create_project(self) -> None:
         project_name, accepted = QInputDialog.getText(
             self,
-            "Thêm dự án",
-            "Tên dự án:",
+            text("project.add_title"),
+            text("project.name_prompt"),
         )
         if not accepted or not project_name.strip():
             return
         try:
             profile = self._project_store.create(project_name)
         except LicenseIssueError as exc:
-            QMessageBox.warning(self, "Không thể tạo dự án", str(exc))
+            QMessageBox.warning(self, text("project.create_failed"), str(exc))
             return
         self._switch_project(profile.project_id)
-        self._notify(f"Đã tạo profile {profile.project_name}")
+        self._notify(text("project.created", name=profile.project_name))
         self._show_settings()
 
     def _switch_project(self, project_id: str) -> None:
@@ -576,20 +706,17 @@ class LicenseAdminWindow(QMainWindow):
         try:
             self._settings = self._project_store.load(project_id)
         except LicenseIssueError as exc:
-            QMessageBox.critical(self, "Không thể mở dự án", str(exc))
+            QMessageBox.critical(self, text("project.open_failed"), str(exc))
             return
         self._qsettings.setValue("projects/active", project_id)
         self.search_edit.clear()
-        self.status_combo.setCurrentIndex(0)
-        self.sync_badge.setText("Chưa đồng bộ")
-        self.sync_badge.setProperty("synced", False)
-        self.sync_badge.style().unpolish(self.sync_badge)
-        self.sync_badge.style().polish(self.sync_badge)
+        self.status_combo.set_current_data(None, emit=True)
+        self._set_sync_badge("unsynced")
         self._set_project_identity()
         self._load_local(show_missing=True)
         self._refresh_view()
         self._rebuild_project_menu()
-        self._notify(f"Đã chuyển sang {self._settings.project_name}", tone="info")
+        self._notify(text("project.switched", name=self._settings.project_name), tone="info")
 
     def _open_project_folder(self) -> None:
         directory = self._project_store.project_directory(self._settings.project_id)
@@ -618,12 +745,15 @@ class LicenseAdminWindow(QMainWindow):
             self._settings = updated
             self._records = self._verified_records(self._records)
         except LicenseIssueError as exc:
-            QMessageBox.critical(self, "Không thể cập nhật project", str(exc))
+            QMessageBox.critical(self, text("project.update_failed"), str(exc))
             return
         self._refresh_view()
         self._notify(
-            "Đã nhập cặp key RSA "
-            f"{imported.info.key_size} bit (SHA-256 {imported.info.short_fingerprint}…)"
+            text(
+                "project.keys_imported",
+                bits=imported.info.key_size,
+                fingerprint=imported.info.short_fingerprint,
+            )
         )
 
     def _import_google_credentials(self) -> None:
@@ -641,33 +771,33 @@ class LicenseAdminWindow(QMainWindow):
         try:
             self._project_store.save(updated)
         except LicenseIssueError as exc:
-            QMessageBox.critical(self, "Không thể cập nhật project", str(exc))
+            QMessageBox.critical(self, text("project.update_failed"), str(exc))
             return
         self._settings = updated
-        self._notify(
-            f"Đã nhập Google service account {imported.info.client_email}"
-        )
+        self._notify(text("project.credential_imported", email=imported.info.client_email))
 
     def _import_project_config(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(
             self,
-            "Nhập cấu hình cho project hiện tại",
+            text("config.import_title"),
             "",
-            "JSON (*.json);;Tất cả file (*)",
+            f"JSON (*.json);;{text('common.all_files')}",
         )
         if not filename:
             return
         try:
             updated = import_project_config(Path(filename), self._settings)
         except LicenseIssueError as exc:
-            QMessageBox.warning(self, "Cấu hình không hợp lệ", str(exc))
+            QMessageBox.warning(self, text("config.invalid"), str(exc))
             return
         answer = QMessageBox.question(
             self,
-            "Áp dụng cấu hình project",
-            f"Áp dụng settings từ {Path(filename).name} cho project "
-            f"“{self._settings.project_name}”?\n\n"
-            "Key, Google credential và dữ liệu license của project vẫn được giữ riêng.",
+            text("config.apply_title"),
+            text(
+                "config.apply_body",
+                file=Path(filename).name,
+                project=self._settings.project_name,
+            ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
@@ -682,20 +812,20 @@ class LicenseAdminWindow(QMainWindow):
             self._project_store.save(updated)
         except LicenseIssueError as exc:
             self._settings = previous
-            QMessageBox.critical(self, "Không thể áp dụng cấu hình", str(exc))
+            QMessageBox.critical(self, text("config.apply_failed"), str(exc))
             return
         self._records = verified
         self._set_project_identity()
         self._rebuild_project_menu()
         self._refresh_view()
-        self._notify("Đã áp dụng cấu hình cho project hiện tại")
+        self._notify(text("config.applied"))
 
     def _export_project_config(self) -> None:
         filename, _ = QFileDialog.getSaveFileName(
             self,
-            "Xuất cấu hình project",
+            text("config.export_title"),
             f"{self._settings.project_id}-settings.json",
-            "JSON (*.json);;Tất cả file (*)",
+            f"JSON (*.json);;{text('common.all_files')}",
         )
         if not filename:
             return
@@ -705,17 +835,16 @@ class LicenseAdminWindow(QMainWindow):
         ).resolve(strict=False):
             QMessageBox.warning(
                 self,
-                "Không thể ghi đè project.json",
-                "Hãy chọn tên file khác. project.json đang được ứng dụng dùng để "
-                "mở project này.",
+                text("config.overwrite_title"),
+                text("config.overwrite_body"),
             )
             return
         try:
             exported = export_project_config(self._settings, target)
         except LicenseIssueError as exc:
-            QMessageBox.critical(self, "Không thể xuất cấu hình", str(exc))
+            QMessageBox.critical(self, text("config.export_failed"), str(exc))
             return
-        self._notify(f"Đã xuất cấu hình ra {exported.name}")
+        self._notify(text("config.exported", file=exported.name))
 
     def _load_local(self, *, show_missing: bool) -> None:
         try:
@@ -724,19 +853,16 @@ class LicenseAdminWindow(QMainWindow):
             )
         except LicenseIssueError as exc:
             if show_missing:
-                QMessageBox.critical(self, "Không thể mở dữ liệu", str(exc))
+                QMessageBox.critical(self, text("data.open_failed"), str(exc))
             self._records = []
 
     def _save_local(self) -> bool:
         try:
             LicenseRepository(self._settings.local_csv_path).save(self._records)
         except LicenseIssueError as exc:
-            QMessageBox.critical(self, "Không thể lưu dữ liệu", str(exc))
+            QMessageBox.critical(self, text("data.save_failed"), str(exc))
             return False
-        self.sync_badge.setText("Chưa đẩy Sheet")
-        self.sync_badge.setProperty("synced", False)
-        self.sync_badge.style().unpolish(self.sync_badge)
-        self.sync_badge.style().polish(self.sync_badge)
+        self._set_sync_badge("dirty")
         return True
 
     def _verified_records(self, records: list[LicenseRecord]) -> list[LicenseRecord]:
@@ -744,7 +870,7 @@ class LicenseAdminWindow(QMainWindow):
             public_key = self._settings.public_key_path.read_bytes()
         except OSError as exc:
             raise LicenseIssueError(
-                f"Không thể đọc public key {self._settings.public_key_path}: {exc}"
+                f"Unable to read public key {self._settings.public_key_path}: {exc}"
             ) from exc
         return validate_record_signatures(
             records,
@@ -769,11 +895,15 @@ class LicenseAdminWindow(QMainWindow):
 
     def _refresh_visible_count(self) -> None:
         self.visible_label.setText(
-            f"Hiển thị {self.proxy_model.rowCount()} / {len(self._records)}"
+            text(
+                "table.visible",
+                visible=self.proxy_model.rowCount(),
+                total=len(self._records),
+            )
         )
 
-    def _filter_status_changed(self) -> None:
-        status = self.status_combo.currentData()
+    def _filter_status_changed(self, _value: object | None = None) -> None:
+        status = self.status_combo.current_data()
         self.proxy_model.set_status(status if isinstance(status, LicenseStatus) else None)
         self._refresh_visible_count()
 
@@ -794,28 +924,28 @@ class LicenseAdminWindow(QMainWindow):
         record = self._selected_record()
         if record is None:
             return
-        menu = QMenu(self)
+        menu = RoundedMenu(parent=self)
         menu.addAction(self.details_action)
         menu.addAction(self.edit_action)
         menu.addAction(self.revoke_action)
         menu.addSeparator()
-        copy_hwid = menu.addAction("Sao chép HWID")
-        copy_token = menu.addAction("Sao chép token")
+        copy_hwid = menu.addAction(text("details.copy_hwid"))
+        copy_token = menu.addAction(text("details.copy_token"))
         selected = menu.exec(self.table.viewport().mapToGlobal(position))
         if selected is copy_hwid:
             QApplication.clipboard().setText(record.hwid)
-            self._notify("Đã sao chép HWID")
+            self._notify(text("message.copied_hwid"))
         elif selected is copy_token:
             QApplication.clipboard().setText(record.token)
-            self._notify("Đã sao chép token")
+            self._notify(text("message.copied_token"))
 
     def _load_signing_key(self) -> Any | None:
         path = self._settings.signing_key_path
         if not path.exists():
             QMessageBox.warning(
                 self,
-                "Không tìm thấy khóa ký",
-                f"Không tìm thấy private key:\n{path}\n\nHãy chọn lại trong Cài đặt.",
+                text("license.key_missing"),
+                text("license.key_missing_body", path=path),
             )
             return None
         try:
@@ -823,8 +953,8 @@ class LicenseAdminWindow(QMainWindow):
         except LicenseIssueError:
             password, accepted = QInputDialog.getText(
                 self,
-                "Mở khóa private key",
-                "Mật khẩu private key:",
+                text("license.unlock"),
+                text("key.password"),
                 QLineEdit.EchoMode.Password,
             )
             if not accepted:
@@ -832,7 +962,7 @@ class LicenseAdminWindow(QMainWindow):
             try:
                 return load_private_key(path, password.encode("utf-8"))
             except LicenseIssueError as exc:
-                QMessageBox.critical(self, "Không thể mở khóa ký", str(exc))
+                QMessageBox.critical(self, text("license.key_missing"), str(exc))
                 return None
 
     def _add_license(self) -> None:
@@ -867,8 +997,8 @@ class LicenseAdminWindow(QMainWindow):
         if collision is not None:
             QMessageBox.warning(
                 self,
-                "HWID đã tồn tại",
-                f"HWID này đang thuộc về {collision.username or 'một dòng dữ liệu lỗi'}.",
+                text("license.duplicate"),
+                f"HWID: {collision.username or text('status.invalid')}",
             )
             return
         private_key = self._load_signing_key()
@@ -888,11 +1018,14 @@ class LicenseAdminWindow(QMainWindow):
             )[0]
             if new_record.parse_error:
                 raise LicenseIssueError(
-                    f"Private key không khớp public key của {self._settings.project_name}: "
-                    f"{new_record.parse_error}"
+                    text(
+                        "license.key_mismatch",
+                        project=self._settings.project_name,
+                        error=new_record.parse_error,
+                    )
                 )
         except LicenseIssueError as exc:
-            QMessageBox.critical(self, "Không thể ký license", str(exc))
+            QMessageBox.critical(self, text("license.sign_failed"), str(exc))
             return
         if original is not None:
             self._records = [item for item in self._records if item.hwid != original.hwid]
@@ -901,7 +1034,15 @@ class LicenseAdminWindow(QMainWindow):
         if self._save_local():
             self._refresh_view()
             self._notify(
-                f"Đã {'cập nhật' if original else 'tạo'} license cho {username}"
+                text(
+                    "license.saved",
+                    action=text(
+                        "license.action_updated"
+                        if original
+                        else "license.action_created"
+                    ),
+                    name=username,
+                )
             )
 
     def _revoke_license(self) -> None:
@@ -910,9 +1051,8 @@ class LicenseAdminWindow(QMainWindow):
             return
         answer = QMessageBox.question(
             self,
-            "Thu hồi license",
-            f"Xóa license của “{record.username or record.hwid}” khỏi dữ liệu cục bộ?\n\n"
-            "Thiết bị chỉ bị thu hồi sau khi bạn đồng bộ lên Google Sheet.",
+            text("license.revoke_title"),
+            text("license.revoke_body", name=record.username or record.hwid),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
@@ -921,7 +1061,7 @@ class LicenseAdminWindow(QMainWindow):
         self._records = [item for item in self._records if item.hwid != record.hwid]
         if self._save_local():
             self._refresh_view()
-            self._notify("Đã thu hồi license trong bản cục bộ")
+            self._notify(text("license.revoked"))
 
     def _show_details(self) -> None:
         record = self._selected_record()
@@ -931,17 +1071,17 @@ class LicenseAdminWindow(QMainWindow):
     def _merge_imported(self, imported: list[LicenseRecord], source_name: str) -> None:
         imported = self._verified_records(imported)
         if not imported:
-            self._notify("File không chứa license nào.", tone="info")
+            self._notify(text("import.empty"), tone="info")
             return
         box = QMessageBox(self)
-        box.setWindowTitle("Nhập dữ liệu")
-        box.setText(f"Đã đọc {len(imported)} license từ {source_name}.")
-        box.setInformativeText("Bạn muốn gộp theo HWID hay thay toàn bộ dữ liệu cục bộ?")
+        box.setWindowTitle(text("import.title"))
+        box.setText(text("import.read", count=len(imported), source=source_name))
+        box.setInformativeText(text("import.choice"))
         merge_button = box.addButton(
-            "Gộp / cập nhật", QMessageBox.ButtonRole.AcceptRole
+            text("import.merge"), QMessageBox.ButtonRole.AcceptRole
         )
         replace_button = box.addButton(
-            "Thay toàn bộ", QMessageBox.ButtonRole.DestructiveRole
+            text("import.replace"), QMessageBox.ButtonRole.DestructiveRole
         )
         box.addButton(QMessageBox.StandardButton.Cancel)
         box.exec()
@@ -956,24 +1096,24 @@ class LicenseAdminWindow(QMainWindow):
         self._records.sort(key=lambda item: (item.username.casefold(), item.hwid))
         if self._save_local():
             self._refresh_view()
-            self._notify(f"Đã nhập {len(imported)} license")
+            self._notify(text("import.imported", count=len(imported)))
 
     def _import_signed(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Nhập signed CSV", "", "CSV (*.csv);;Tất cả file (*)"
+            self, text("action.import_signed"), "", f"CSV (*.csv);;{text('common.all_files')}"
         )
         if not filename:
             return
         try:
             imported = parse_signed_csv(Path(filename).read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeError, LicenseIssueError) as exc:
-            QMessageBox.critical(self, "Không thể nhập CSV", str(exc))
+            QMessageBox.critical(self, text("import.failed"), str(exc))
             return
         self._merge_imported(imported, Path(filename).name)
 
     def _import_legacy(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Nhập legacy CSV", "", "CSV (*.csv);;Tất cả file (*)"
+            self, text("action.import_legacy"), "", f"CSV (*.csv);;{text('common.all_files')}"
         )
         if not filename:
             return
@@ -989,21 +1129,21 @@ class LicenseAdminWindow(QMainWindow):
             )
             imported = parse_signed_csv(result.csv_text)
         except (OSError, UnicodeError, LicenseIssueError) as exc:
-            QMessageBox.critical(self, "Không thể chuyển đổi legacy CSV", str(exc))
+            QMessageBox.critical(self, text("import.legacy_failed"), str(exc))
             return
         self._merge_imported(imported, Path(filename).name)
         if result.skipped_expired_count:
             self._notify(
-                f"Đã bỏ qua {result.skipped_expired_count} license hết hạn.",
+                text("import.skipped", count=result.skipped_expired_count),
                 tone="info",
             )
 
     def _export_signed(self) -> None:
         filename, _ = QFileDialog.getSaveFileName(
             self,
-            "Xuất signed CSV",
+            text("action.export_signed"),
             "signed-licenses.csv",
-            "CSV (*.csv);;Tất cả file (*)",
+            f"CSV (*.csv);;{text('common.all_files')}",
         )
         if not filename:
             return
@@ -1012,9 +1152,9 @@ class LicenseAdminWindow(QMainWindow):
                 serialize_signed_csv(self._records), encoding="utf-8", newline=""
             )
         except OSError as exc:
-            QMessageBox.critical(self, "Không thể xuất CSV", str(exc))
+            QMessageBox.critical(self, text("export.failed"), str(exc))
             return
-        self._notify(f"Đã xuất {len(self._records)} license")
+        self._notify(text("export.done", count=len(self._records)))
 
     def _sheet_client(self) -> GoogleSheetsClient:
         return GoogleSheetsClient(self._settings.sheets_config())
@@ -1023,8 +1163,8 @@ class LicenseAdminWindow(QMainWindow):
         if self._records:
             answer = QMessageBox.question(
                 self,
-                "Tải dữ liệu từ Sheet",
-                "Thao tác này sẽ thay bản cục bộ bằng dữ liệu đang công khai trên Sheet. Tiếp tục?",
+                text("sheet.pull_title"),
+                text("sheet.pull_body"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
             )
@@ -1045,9 +1185,9 @@ class LicenseAdminWindow(QMainWindow):
             if self._save_local():
                 self._refresh_view()
                 self._set_remote_digest(records)
-                self._mark_synced(f"Đã tải {len(records)} license từ Sheet")
+                self._mark_synced(text("sheet.pulled", count=len(records)))
 
-        self._run_operation("Đang tải dữ liệu từ Google Sheet…", operation, complete)
+        self._run_operation(text("sheet.pulling"), operation, complete)
 
     def _push_sheet(self, *, force: bool = False) -> None:
         invalid_count = sum(
@@ -1056,31 +1196,33 @@ class LicenseAdminWindow(QMainWindow):
         if invalid_count:
             QMessageBox.critical(
                 self,
-                "Không thể đồng bộ",
-                f"Có {invalid_count} license sai định dạng hoặc chữ ký. Hãy sửa hoặc thu hồi "
-                "các dòng lỗi trước khi đẩy lên Sheet.",
+                text("sheet.sync_failed"),
+                text("sheet.invalid_rows", count=invalid_count),
             )
             return
         try:
             self._settings.sheets_config()
         except LicenseIssueError as exc:
-            QMessageBox.warning(self, "Chưa cấu hình Google Sheet", str(exc))
+            QMessageBox.warning(self, text("sheet.not_configured"), str(exc))
             self._show_settings()
             return
         if self._settings.service_account_path is None:
             QMessageBox.warning(
                 self,
-                "Thiếu service account",
-                "Đồng bộ ghi cần service-account JSON. Hãy chọn file trong Cài đặt.",
+                text("sheet.credentials_missing"),
+                text("sheet.credentials_body"),
             )
             self._show_settings()
             return
         if not force:
             answer = QMessageBox.question(
                 self,
-                "Đồng bộ lên Google Sheet",
-                f"Xuất bản {len(self._records)} license và xóa các dòng dư trên worksheet "
-                f"“{self._settings.worksheet}”?",
+                text("sheet.push_title"),
+                text(
+                    "sheet.push_body",
+                    count=len(self._records),
+                    worksheet=self._settings.worksheet,
+                ),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
             )
@@ -1103,9 +1245,8 @@ class LicenseAdminWindow(QMainWindow):
             if status == "conflict":
                 answer = QMessageBox.warning(
                     self,
-                    "Sheet đã thay đổi",
-                    "Google Sheet đã được sửa từ lần đồng bộ gần nhất. Đẩy cưỡng bức sẽ ghi đè "
-                    "những thay đổi đó. Bạn có muốn tiếp tục?",
+                    text("sheet.conflict_title"),
+                    text("sheet.conflict_body"),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                     QMessageBox.StandardButton.Cancel,
                 )
@@ -1113,39 +1254,39 @@ class LicenseAdminWindow(QMainWindow):
                     self._push_sheet(force=True)
                 return
             self._qsettings.setValue(self._digest_key(), digest)
-            self._mark_synced(f"Đã đồng bộ {len(snapshot)} license lên Sheet")
+            self._mark_synced(text("sheet.synced", count=len(snapshot)))
 
-        self._run_operation("Đang đồng bộ lên Google Sheet…", operation, complete)
+        self._run_operation(text("sheet.syncing"), operation, complete)
 
     def _format_sheet(self) -> None:
         try:
             client = self._sheet_client()
         except LicenseIssueError as exc:
-            QMessageBox.warning(self, "Chưa cấu hình Google Sheet", str(exc))
+            QMessageBox.warning(self, text("sheet.not_configured"), str(exc))
             return
         self._run_operation(
-            "Đang format Google Sheet…",
+            text("sheet.formatting"),
             lambda: client.format_worksheet(),
-            lambda _result: self._notify("Đã format header, cột, bộ lọc và freeze hàng đầu."),
+            lambda _result: self._notify(text("sheet.formatted")),
         )
 
     def _test_connection(self) -> None:
         try:
             client = self._sheet_client()
         except LicenseIssueError as exc:
-            QMessageBox.warning(self, "Chưa cấu hình Google Sheet", str(exc))
+            QMessageBox.warning(self, text("sheet.not_configured"), str(exc))
             return
 
         def complete(records: Any) -> None:
-            self._notify(f"Kết nối thành công. Đọc được {len(records)} license.")
+            self._notify(text("message.connection_ok", count=len(records)))
 
-        self._run_operation("Đang kiểm tra kết nối…", client.read_records, complete)
+        self._run_operation(text("sheet.checking"), client.read_records, complete)
 
     def _open_sheet(self) -> None:
         try:
             url = self._settings.sheets_config().browser_url
         except LicenseIssueError as exc:
-            QMessageBox.warning(self, "Chưa cấu hình Google Sheet", str(exc))
+            QMessageBox.warning(self, text("sheet.not_configured"), str(exc))
             return
         QDesktopServices.openUrl(QUrl(url))
 
@@ -1165,7 +1306,7 @@ class LicenseAdminWindow(QMainWindow):
         try:
             self._project_store.save(values)
         except LicenseIssueError as exc:
-            QMessageBox.critical(self, "Không thể lưu cài đặt", str(exc))
+            QMessageBox.critical(self, text("settings.save_failed"), str(exc))
             return
         self._settings = values
         self._qsettings.setValue("projects/active", values.project_id)
@@ -1175,12 +1316,12 @@ class LicenseAdminWindow(QMainWindow):
             try:
                 self._records = self._verified_records(self._records)
             except LicenseIssueError as exc:
-                QMessageBox.critical(self, "Không thể kiểm tra license", str(exc))
+                QMessageBox.critical(self, text("settings.verify_failed"), str(exc))
                 self._records = []
         self._set_project_identity()
         self._rebuild_project_menu()
         self._refresh_view()
-        self._notify("Đã lưu cài đặt")
+        self._notify(text("message.saved_settings"))
 
     def _run_operation(
         self,
@@ -1198,15 +1339,15 @@ class LicenseAdminWindow(QMainWindow):
             try:
                 on_success(result)
             except Exception as exc:
-                QMessageBox.critical(self, "Không thể hoàn tất thao tác", str(exc))
+                QMessageBox.critical(self, text("operation.complete_failed"), str(exc))
 
         def failed(error: str) -> None:
-            QMessageBox.critical(self, "Thao tác thất bại", error)
+            QMessageBox.critical(self, text("message.operation_failed"), error)
 
         def finished() -> None:
             self._workers.discard(worker)
             worker.deleteLater()
-            self._set_busy(False, "Sẵn sàng")
+            self._set_busy(False, text("message.ready"))
 
         worker.succeeded.connect(succeeded)
         worker.failed.connect(failed)
@@ -1251,10 +1392,7 @@ class LicenseAdminWindow(QMainWindow):
         self._qsettings.setValue(self._digest_key(), records_digest(records))
 
     def _mark_synced(self, message: str) -> None:
-        self.sync_badge.setText("Đã đồng bộ")
-        self.sync_badge.setProperty("synced", True)
-        self.sync_badge.style().unpolish(self.sync_badge)
-        self.sync_badge.style().polish(self.sync_badge)
+        self._set_sync_badge("synced")
         self._notify(message)
 
     def _notify(self, message: str, *, tone: str = "success") -> None:
@@ -1269,9 +1407,8 @@ class LicenseAdminWindow(QMainWindow):
         if self._workers:
             QMessageBox.information(
                 self,
-                "Đang có thao tác chạy",
-                "Một thao tác mạng vẫn đang chạy. Vui lòng chờ thao tác hoàn tất rồi đóng "
-                "ứng dụng để tránh làm gián đoạn đồng bộ.",
+                text("operation.running_title"),
+                text("operation.running_body"),
             )
             event.ignore()
             return

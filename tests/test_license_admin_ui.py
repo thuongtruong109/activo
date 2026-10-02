@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QPoint, QSettings, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QMessageBox,
@@ -20,8 +20,11 @@ from PySide6.QtWidgets import (
 
 from license_admin.dialogs import SettingsDialog
 from license_admin.domain import LicenseRecord
+from license_admin.flag_icons import FLAG_CDN_TEMPLATE, FlagIconLoader
 from license_admin.main_window import LicenseAdminWindow
 from license_admin.icons import ICON_SPRITE_PATH, svg_icon
+from license_admin.localization import DEFAULT_LANGUAGE, LANGUAGES, set_language
+from license_admin.popover import RoundedMenu
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.settings import ProjectStore
 from license_admin.theme import ADMIN_STYLESHEET
@@ -134,8 +137,47 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertFalse(window.table.verticalHeader().isHidden())
             self.assertTrue(window.statusBar().isHidden())
             self.assertTrue(window.menuBar().isHidden())
+            self.assertTrue(
+                bool(window.windowFlags() & Qt.WindowType.FramelessWindowHint)
+            )
+            self.assertFalse(window.mask().isEmpty())
+            self.assertFalse(window.mask().contains(QPoint(0, 0)))
+            self.assertTrue(
+                window.mask().contains(window.rect().center())
+            )
+            window.showMaximized()
+            self.app.processEvents()
+            self.assertTrue(window.mask().isEmpty())
+            window.showNormal()
+            window.resize(980, 640)
+            self.app.processEvents()
+            self.assertFalse(window.mask().isEmpty())
             self.assertEqual(window.sidebar.width(), 220)
             self.assertEqual(window.top_bar.height(), 58)
+            self.assertEqual(
+                window.window_chrome.height(),
+                window.top_bar.height(),
+            )
+            self.assertIs(window.window_chrome.parentWidget(), window.sidebar)
+            self.assertEqual(window.window_chrome.close_button.objectName(), "trafficClose")
+            self.assertEqual(
+                window.window_chrome.minimize_button.objectName(),
+                "trafficMinimize",
+            )
+            self.assertEqual(
+                window.window_chrome.maximize_button.objectName(),
+                "trafficMaximize",
+            )
+            content_margins = window.content_surface.layout().contentsMargins()
+            self.assertEqual(
+                (
+                    content_margins.left(),
+                    content_margins.top(),
+                    content_margins.right(),
+                    content_margins.bottom(),
+                ),
+                (12, 10, 12, 12),
+            )
             self.assertIs(window.top_controls.parentWidget(), window.top_bar)
             self.assertIs(window.primary_action_button.parentWidget(), window.top_bar)
             self.assertEqual(window.primary_action_button.width(), 128)
@@ -196,6 +238,27 @@ class LicenseAdminUiTests(unittest.TestCase):
                     settings.import_credentials_button.objectName(),
                     "importProjectCredentials",
                 )
+                self.assertTrue(
+                    bool(
+                        settings.windowFlags()
+                        & Qt.WindowType.FramelessWindowHint
+                    )
+                )
+                self.assertEqual(settings.settings_tab_header.tab_bar.count(), 3)
+                self.assertEqual(settings.settings_pages.count(), 3)
+                self.assertEqual(
+                    settings.settings_tab_header.close_button.objectName(),
+                    "modalCloseButton",
+                )
+                settings.show()
+                self.app.processEvents()
+                self.assertFalse(settings.mask().isEmpty())
+                self.assertFalse(settings.mask().contains(QPoint(0, 0)))
+                self.assertTrue(
+                    settings.mask().contains(settings.rect().center())
+                )
+                settings.settings_tab_header.tab_bar.setCurrentIndex(2)
+                self.assertEqual(settings.settings_pages.currentIndex(), 2)
             finally:
                 settings.close()
         finally:
@@ -229,6 +292,68 @@ class LicenseAdminUiTests(unittest.TestCase):
                     1,
                 )
         finally:
+            window.close()
+
+    def test_rounded_popovers_and_live_language_switching(self) -> None:
+        set_language(DEFAULT_LANGUAGE)
+        self.qsettings.setValue("ui/language", DEFAULT_LANGUAGE)
+        window = self.create_window()
+        try:
+            self.assertIs(
+                window.language_selector.parentWidget(),
+                window.window_chrome,
+            )
+            self.assertEqual(window.language_selector.currentData(), "en")
+            self.assertEqual(
+                FLAG_CDN_TEMPLATE,
+                "https://flagcdn.io/flags/4x3/{country_code}.svg",
+            )
+            self.assertFalse(
+                FlagIconLoader(window)._render_svg(
+                    b'<svg xmlns="http://www.w3.org/2000/svg" '
+                    b'viewBox="0 0 4 3"><path fill="#fff" d="M0 0h4v3H0z"/>'
+                    b"</svg>"
+                ).isNull()
+            )
+            self.assertEqual(
+                len(window.language_selector.actions()),
+                len(LANGUAGES),
+            )
+            self.assertTrue(
+                all(
+                    not action.icon().isNull()
+                    for action in window.language_selector.actions()
+                )
+            )
+            for menu in (
+                window.project_menu,
+                window.file_menu,
+                window.license_menu,
+                window.sheet_menu,
+                window.status_combo.menu(),
+                window.project_combo.menu(),
+                window.language_selector.menu(),
+            ):
+                self.assertIsInstance(menu, RoundedMenu)
+                self.assertEqual(menu.objectName(), "roundedPopover")
+                self.assertTrue(
+                    menu.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+                )
+
+            self.assertTrue(
+                window.language_selector.set_current_data("vi", emit=True)
+            )
+            self.assertEqual(window.new_action.text(), "Tạo license")
+            self.assertEqual(window.status_combo.actions()[0].text(), "Tất cả trạng thái")
+            self.assertEqual(window.table_model.headerData(0, Qt.Orientation.Horizontal), "Người dùng")
+
+            self.assertTrue(
+                window.language_selector.set_current_data("es", emit=True)
+            )
+            self.assertEqual(window.new_action.text(), "Crear licencia")
+            self.assertEqual(self.qsettings.value("ui/language"), "es")
+        finally:
+            window.language_selector.set_current_data("en", emit=True)
             window.close()
 
     def test_dashboard_cards_are_pixel_aligned_at_reference_size(self) -> None:

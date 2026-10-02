@@ -79,15 +79,15 @@ class MetricCard(QFrame):
         layout.setSpacing(10)
         copy = QVBoxLayout()
         copy.setSpacing(5)
-        title_label = QLabel(title)
-        title_label.setObjectName("metricTitle")
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("metricTitle")
         self.value_label = QLabel("0")
         self.value_label.setObjectName("metricValue")
-        note_label = QLabel(note)
-        note_label.setObjectName("metricNote")
-        copy.addWidget(title_label)
+        self.note_label = QLabel(note)
+        self.note_label.setObjectName("metricNote")
+        copy.addWidget(self.title_label)
         copy.addWidget(self.value_label)
-        copy.addWidget(note_label)
+        copy.addWidget(self.note_label)
         copy.addStretch(1)
 
         icon = QLabel()
@@ -111,6 +111,10 @@ class MetricCard(QFrame):
 
     def set_value(self, value: int) -> None:
         self.value_label.setText(f"{value:,}".replace(",", "."))
+
+    def set_texts(self, title: str, note: str) -> None:
+        self.title_label.setText(title)
+        self.note_label.setText(note)
 
 
 class ProjectIdentityCard(QFrame):

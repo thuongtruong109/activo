@@ -27,6 +27,7 @@ from license_admin.key_store import (
     public_key_fingerprint,
 )
 from license_admin.icons import svg_icon
+from license_admin.localization import text
 
 
 class KeyImportDialog(QDialog):
@@ -44,14 +45,12 @@ class KeyImportDialog(QDialog):
         self._project_directory = project_directory
         self._record_count = record_count
         self._imported_pair: ImportedKeyPair | None = None
-        self.setWindowTitle(f"Nhập key — {project_name}")
+        self.setWindowTitle(text("key.title", project=project_name))
         self.setMinimumWidth(680)
 
         layout = QVBoxLayout(self)
         intro = QLabel(
-            "Chọn private key và public key thuộc cùng một cặp RSA. Sau khi xác minh, "
-            "ứng dụng sẽ sao chép chúng vào profile hiện tại dưới tên private.pem và "
-            "public.pem."
+            text("key.intro")
         )
         intro.setWordWrap(True)
         intro.setObjectName("muted")
@@ -60,34 +59,38 @@ class KeyImportDialog(QDialog):
         form = QFormLayout()
         self.private_key_edit = self._path_field(
             form,
-            "Private key nguồn",
-            "Chọn RSA private key",
+            text("key.private_source"),
+            text("key.private_source"),
         )
         self.private_key_edit.setObjectName("importPrivateKey")
         self.public_key_edit = self._path_field(
             form,
-            "Public key nguồn",
-            "Chọn RSA public key",
+            text("key.public_source"),
+            text("key.public_source"),
         )
         self.public_key_edit.setObjectName("importPublicKey")
         self.password_edit = QLineEdit()
         self.password_edit.setObjectName("importKeyPassword")
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_edit.setPlaceholderText("Chỉ nhập nếu private key được mã hóa")
-        form.addRow("Mật khẩu private key", self.password_edit)
+        self.password_edit.setPlaceholderText(text("key.password_placeholder"))
+        form.addRow(text("key.password"), self.password_edit)
         layout.addLayout(form)
 
         destination = QLabel(
-            f"Đích: {project_directory / 'private.pem'}\n"
-            f"      {project_directory / 'public.pem'}"
+            text(
+                "key.destination",
+                path=(
+                    f"{project_directory / 'private.pem'}\n"
+                    f"{project_directory / 'public.pem'}"
+                ),
+            )
         )
         destination.setWordWrap(True)
         destination.setObjectName("muted")
         layout.addWidget(destination)
 
         warning = QLabel(
-            "Private key là bí mật của nhà phát hành. Không tải lên cloud, Sheet hoặc "
-            "commit vào Git. Mật khẩu chỉ dùng trong bộ nhớ và không được lưu."
+            text("key.warning")
         )
         warning.setWordWrap(True)
         warning.setObjectName("warning")
@@ -98,10 +101,13 @@ class KeyImportDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel
         )
         import_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        import_button.setText("Xác minh và nhập")
+        import_button.setText(text("key.verify_import"))
         import_button.setIcon(svg_icon("key", 16))
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setIcon(
             svg_icon("close", 16)
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+            text("common.cancel")
         )
         buttons.accepted.connect(self._validate_and_import)
         buttons.rejected.connect(self.reject)
@@ -117,7 +123,7 @@ class KeyImportDialog(QDialog):
         row = QHBoxLayout(container)
         row.setContentsMargins(0, 0, 0, 0)
         edit = QLineEdit()
-        button = QPushButton("Chọn…")
+        button = QPushButton(text("common.choose"))
         button.setIcon(svg_icon("folder", 16))
 
         def browse() -> None:
@@ -125,7 +131,7 @@ class KeyImportDialog(QDialog):
                 self,
                 title,
                 edit.text(),
-                "PEM (*.pem);;Tất cả file (*)",
+                f"PEM (*.pem);;{text('common.all_files')}",
             )
             if selected:
                 edit.setText(selected)
@@ -142,8 +148,8 @@ class KeyImportDialog(QDialog):
         if not private_text or not public_text:
             QMessageBox.warning(
                 self,
-                "Thiếu key",
-                "Hãy chọn cả private key và public key cần nhập.",
+                text("message.missing_configuration"),
+                text("key.missing"),
             )
             return
 
@@ -156,13 +162,13 @@ class KeyImportDialog(QDialog):
         except KeyPasswordRequiredError:
             QMessageBox.warning(
                 self,
-                "Private key được mã hóa",
-                "Hãy nhập mật khẩu private key rồi thử lại.",
+                text("key.password_required"),
+                text("key.password_body"),
             )
             self.password_edit.setFocus()
             return
         except LicenseIssueError as exc:
-            QMessageBox.warning(self, "Cặp key không hợp lệ", str(exc))
+            QMessageBox.warning(self, text("key.invalid_pair"), str(exc))
             return
 
         private_target = self._project_directory / "private.pem"
@@ -182,19 +188,12 @@ class KeyImportDialog(QDialog):
                 except LicenseIssueError:
                     changed_public_key = True
             if changed_public_key and self._record_count:
-                message = (
-                    f"Project đang có {self._record_count} license. Public key mới khác "
-                    "public key hiện tại nên các license đã ký sẽ bị đánh dấu không hợp lệ "
-                    "cho đến khi được cấp lại.\n\nBạn chắc chắn muốn thay cặp key?"
-                )
+                message = text("key.replace_licenses", count=self._record_count)
             else:
-                message = (
-                    "Project đã có key. Bạn có muốn thay private.pem và public.pem bằng "
-                    "cặp key vừa chọn?"
-                )
+                message = text("key.replace_existing")
             answer = QMessageBox.warning(
                 self,
-                "Xác nhận thay key",
+                text("key.replace_title"),
                 message,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
@@ -211,7 +210,7 @@ class KeyImportDialog(QDialog):
                 overwrite=targets_exist,
             )
         except LicenseIssueError as exc:
-            QMessageBox.critical(self, "Không thể nhập key", str(exc))
+            QMessageBox.critical(self, text("key.import_failed"), str(exc))
             return
         self.password_edit.clear()
         self.accept()

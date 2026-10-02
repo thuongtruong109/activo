@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from issue_license import LicenseIssueError
 from license_admin.icons import svg_icon
+from license_admin.localization import text
 from license_admin.service_account_store import (
     ImportedServiceAccount,
     SERVICE_ACCOUNT_FILENAME,
@@ -41,13 +42,12 @@ class ServiceAccountImportDialog(QDialog):
         super().__init__(parent)
         self._project_directory = project_directory
         self._imported: ImportedServiceAccount | None = None
-        self.setWindowTitle(f"Nhập Google service account — {project_name}")
+        self.setWindowTitle(text("credential.title", project=project_name))
         self.setMinimumWidth(680)
 
         layout = QVBoxLayout(self)
         intro = QLabel(
-            "Chọn JSON của Google service account. File sẽ được kiểm tra và sao chép "
-            "vào project hiện tại; project khác không sử dụng credential này."
+            text("credential.intro")
         )
         intro.setWordWrap(True)
         intro.setObjectName("muted")
@@ -59,25 +59,27 @@ class ServiceAccountImportDialog(QDialog):
         row.setContentsMargins(0, 0, 0, 0)
         self.source_edit = QLineEdit()
         self.source_edit.setObjectName("importServiceAccount")
-        self.source_edit.setPlaceholderText("Chọn service-account JSON")
-        browse_button = QPushButton("Chọn…")
+        self.source_edit.setPlaceholderText(text("credential.placeholder"))
+        browse_button = QPushButton(text("common.choose"))
         browse_button.setIcon(svg_icon("folder", 16))
         browse_button.clicked.connect(self._browse)
         row.addWidget(self.source_edit, 1)
         row.addWidget(browse_button)
-        form.addRow("JSON nguồn", container)
+        form.addRow(text("credential.source"), container)
         layout.addLayout(form)
 
         destination = QLabel(
-            f"Đích: {project_directory / SERVICE_ACCOUNT_FILENAME}"
+            text(
+                "credential.destination",
+                path=project_directory / SERVICE_ACCOUNT_FILENAME,
+            )
         )
         destination.setWordWrap(True)
         destination.setObjectName("muted")
         layout.addWidget(destination)
 
         warning = QLabel(
-            "JSON này chứa private key. Không commit, gửi qua chat hoặc đặt trong thư "
-            "mục public. Khi chạy Docker, file được giữ trong volume dữ liệu riêng."
+            text("credential.warning")
         )
         warning.setWordWrap(True)
         warning.setObjectName("warning")
@@ -88,10 +90,13 @@ class ServiceAccountImportDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel
         )
         import_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        import_button.setText("Xác minh và nhập")
+        import_button.setText(text("credential.verify_import"))
         import_button.setIcon(svg_icon("upload", 16))
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setIcon(
             svg_icon("close", 16)
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+            text("common.cancel")
         )
         buttons.accepted.connect(self._validate_and_import)
         buttons.rejected.connect(self.reject)
@@ -100,9 +105,9 @@ class ServiceAccountImportDialog(QDialog):
     def _browse(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
             self,
-            "Chọn Google service-account JSON",
+            text("credential.title", project=""),
             self.source_edit.text(),
-            "JSON (*.json);;Tất cả file (*)",
+            f"JSON (*.json);;{text('common.all_files')}",
         )
         if selected:
             self.source_edit.setText(selected)
@@ -112,15 +117,15 @@ class ServiceAccountImportDialog(QDialog):
         if not source_text:
             QMessageBox.warning(
                 self,
-                "Thiếu credential",
-                "Hãy chọn Google service-account JSON cần nhập.",
+                text("message.missing_configuration"),
+                text("credential.missing"),
             )
             return
         source = Path(source_text)
         try:
             info = inspect_service_account(source)
         except LicenseIssueError as exc:
-            QMessageBox.warning(self, "Credential không hợp lệ", str(exc))
+            QMessageBox.warning(self, text("credential.invalid"), str(exc))
             return
 
         target = self._project_directory / SERVICE_ACCOUNT_FILENAME
@@ -131,9 +136,8 @@ class ServiceAccountImportDialog(QDialog):
         if overwrite:
             answer = QMessageBox.warning(
                 self,
-                "Xác nhận thay credential",
-                "Project đã có service-account JSON. Bạn có muốn thay file hiện tại "
-                f"bằng credential của {info.client_email}?",
+                text("credential.replace_title"),
+                text("credential.replace_body", email=info.client_email),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
             )
@@ -146,7 +150,7 @@ class ServiceAccountImportDialog(QDialog):
                 overwrite=overwrite,
             )
         except LicenseIssueError as exc:
-            QMessageBox.critical(self, "Không thể nhập credential", str(exc))
+            QMessageBox.critical(self, text("credential.import_failed"), str(exc))
             return
         self.accept()
 

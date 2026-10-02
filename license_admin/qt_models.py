@@ -16,14 +16,15 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor
 
 from license_admin.domain import LicenseRecord, LicenseStatus
+from license_admin.localization import text
 
 
-STATUS_LABELS = {
-    LicenseStatus.ACTIVE: "Đang hoạt động",
-    LicenseStatus.EXPIRING: "Sắp hết hạn",
-    LicenseStatus.EXPIRED: "Đã hết hạn",
-    LicenseStatus.FUTURE: "Chưa hiệu lực",
-    LicenseStatus.INVALID: "Dữ liệu lỗi",
+STATUS_LABEL_KEYS = {
+    LicenseStatus.ACTIVE: "status.active",
+    LicenseStatus.EXPIRING: "status.expiring",
+    LicenseStatus.EXPIRED: "status.expired",
+    LicenseStatus.FUTURE: "status.future",
+    LicenseStatus.INVALID: "status.invalid",
 }
 
 STATUS_COLORS = {
@@ -47,13 +48,13 @@ def normalize_search_text(value: str) -> str:
 
 
 class LicenseTableModel(QAbstractTableModel):
-    HEADERS = (
-        "Người dùng",
+    HEADER_KEYS = (
+        "table.user",
         "HWID",
-        "Trạng thái",
-        "Hết hạn (UTC)",
-        "Còn lại",
-        "Ngày cấp (UTC)",
+        "table.status",
+        "table.expires",
+        "table.remaining",
+        "table.issued",
         "JTI",
     )
 
@@ -85,7 +86,7 @@ class LicenseTableModel(QAbstractTableModel):
         self,
         parent: QModelIndex | QPersistentModelIndex = QModelIndex(),
     ) -> int:
-        return 0 if parent.isValid() else len(self.HEADERS)
+        return 0 if parent.isValid() else len(self.HEADER_KEYS)
 
     def headerData(
         self,
@@ -95,7 +96,8 @@ class LicenseTableModel(QAbstractTableModel):
     ) -> Any:
         if role == Qt.ItemDataRole.DisplayRole:
             if orientation == Qt.Orientation.Horizontal:
-                return self.HEADERS[section]
+                key = self.HEADER_KEYS[section]
+                return key if key in {"HWID", "JTI"} else text(key)
             return section + 1
         if (
             role == Qt.ItemDataRole.TextAlignmentRole
@@ -116,7 +118,7 @@ class LicenseTableModel(QAbstractTableModel):
         values: tuple[Any, ...] = (
             record.username or "—",
             record.hwid,
-            STATUS_LABELS[status],
+            text(STATUS_LABEL_KEYS[status]),
             self._format_datetime(record.expires_at),
             self._remaining(record),
             self._format_datetime(record.issued_at),
@@ -161,7 +163,16 @@ class LicenseTableModel(QAbstractTableModel):
         days = record.remaining_days()
         if days is None:
             return "—"
-        return f"{days} ngày"
+        return text("table.days", count=days)
+
+    def retranslate(self) -> None:
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 6)
+        if self._records:
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(len(self._records) - 1, 6),
+                [int(Qt.ItemDataRole.DisplayRole)],
+            )
 
 
 class LicenseFilterModel(QSortFilterProxyModel):

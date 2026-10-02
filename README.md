@@ -85,7 +85,8 @@ khẩu trong `.env`. Có thể đổi cổng bằng `ACTIVO_PORT` và độ phâ
 `ACTIVO_SCREEN`.
 
 Volume `activo-data` giữ toàn bộ project và QSettings tại `/data`, nên rebuild
-container không làm mất key, credential, settings hoặc CSV. Khi triển khai ra
+container không làm mất key, credential, settings, CSV hoặc cache icon ngôn
+ngữ. Khi triển khai ra
 Internet, đặt dịch vụ sau reverse proxy HTTPS/firewall; không công khai trực
 tiếp cổng noVNC. Sao lưu volume này như một kho bí mật vì nó chứa private key
 và Google credential.
@@ -107,6 +108,9 @@ không nên thêm liên kết mã nguồn giữa License Manager với ứng d�
   và private key trước khi lưu.
 - Nhập/xuất cấu hình di động mà không trộn key, credential hoặc dữ liệu giữa
   các project.
+- Đổi trực tiếp giữa English, Tiếng Việt, Español, 日本語, 中文, 한국어 và
+  Português; lựa chọn được lưu lại. Flag được tải bất đồng bộ từ FlagCDN, cache
+  cục bộ và có placeholder khi offline.
 - Self-host giao diện bằng Docker/noVNC với volume lưu dữ liệu bền vững.
 
 ## Bảo mật
