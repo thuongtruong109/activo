@@ -59,7 +59,12 @@ from license_admin.domain import (
 from license_admin.google_sheets import GoogleSheetsClient, download_public_records
 from license_admin.icons import icon_pixmap, svg_icon
 from license_admin.key_import_dialog import KeyImportDialog
+from license_admin.project_config import (
+    export_project_config,
+    import_project_config,
+)
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
+from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.settings import APPLICATION_ROOT, AdminSettings, ProjectStore
 from license_admin.storage import LicenseRepository
 from license_admin.toast import Toast
@@ -141,6 +146,24 @@ class LicenseAdminWindow(QMainWindow):
             svg_icon("key"), "Nhập cặp key…", self
         )
         self.import_project_keys_action.triggered.connect(self._import_project_keys)
+        self.import_google_credentials_action = QAction(
+            svg_icon("upload"), "Nhập Google service JSON…", self
+        )
+        self.import_google_credentials_action.triggered.connect(
+            self._import_google_credentials
+        )
+        self.import_project_config_action = QAction(
+            svg_icon("import"), "Nhập cấu hình project…", self
+        )
+        self.import_project_config_action.triggered.connect(
+            self._import_project_config
+        )
+        self.export_project_config_action = QAction(
+            svg_icon("export"), "Xuất cấu hình project…", self
+        )
+        self.export_project_config_action.triggered.connect(
+            self._export_project_config
+        )
         self.import_signed_action = QAction(
             svg_icon("import"), "Nhập signed CSV…", self
         )
@@ -504,6 +527,11 @@ class LicenseAdminWindow(QMainWindow):
         self.project_menu.addSeparator()
         self.project_menu.addAction(self.new_project_action)
         self.project_menu.addAction(self.import_project_keys_action)
+        self.project_menu.addAction(self.import_google_credentials_action)
+        self.project_menu.addSeparator()
+        self.project_menu.addAction(self.import_project_config_action)
+        self.project_menu.addAction(self.export_project_config_action)
+        self.project_menu.addSeparator()
         self.project_menu.addAction(self.open_project_folder_action)
         self.project_menu.addAction(self.settings_action)
         self.project_combo.blockSignals(True)
@@ -597,6 +625,97 @@ class LicenseAdminWindow(QMainWindow):
             "Đã nhập cặp key RSA "
             f"{imported.info.key_size} bit (SHA-256 {imported.info.short_fingerprint}…)"
         )
+
+    def _import_google_credentials(self) -> None:
+        dialog = ServiceAccountImportDialog(
+            self,
+            project_name=self._settings.project_name,
+            project_directory=self._project_store.project_directory(
+                self._settings.project_id
+            ),
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        imported = dialog.imported_service_account()
+        updated = replace(self._settings, service_account_path=imported.path)
+        try:
+            self._project_store.save(updated)
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, "Không thể cập nhật project", str(exc))
+            return
+        self._settings = updated
+        self._notify(
+            f"Đã nhập Google service account {imported.info.client_email}"
+        )
+
+    def _import_project_config(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Nhập cấu hình cho project hiện tại",
+            "",
+            "JSON (*.json);;Tất cả file (*)",
+        )
+        if not filename:
+            return
+        try:
+            updated = import_project_config(Path(filename), self._settings)
+        except LicenseIssueError as exc:
+            QMessageBox.warning(self, "Cấu hình không hợp lệ", str(exc))
+            return
+        answer = QMessageBox.question(
+            self,
+            "Áp dụng cấu hình project",
+            f"Áp dụng settings từ {Path(filename).name} cho project "
+            f"“{self._settings.project_name}”?\n\n"
+            "Key, Google credential và dữ liệu license của project vẫn được giữ riêng.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        previous = self._settings
+        self._settings = updated
+        try:
+            verified = (
+                self._verified_records(self._records) if self._records else []
+            )
+            self._project_store.save(updated)
+        except LicenseIssueError as exc:
+            self._settings = previous
+            QMessageBox.critical(self, "Không thể áp dụng cấu hình", str(exc))
+            return
+        self._records = verified
+        self._set_project_identity()
+        self._rebuild_project_menu()
+        self._refresh_view()
+        self._notify("Đã áp dụng cấu hình cho project hiện tại")
+
+    def _export_project_config(self) -> None:
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Xuất cấu hình project",
+            f"{self._settings.project_id}-settings.json",
+            "JSON (*.json);;Tất cả file (*)",
+        )
+        if not filename:
+            return
+        target = Path(filename)
+        if target.resolve(strict=False) == self._project_store.profile_path(
+            self._settings.project_id
+        ).resolve(strict=False):
+            QMessageBox.warning(
+                self,
+                "Không thể ghi đè project.json",
+                "Hãy chọn tên file khác. project.json đang được ứng dụng dùng để "
+                "mở project này.",
+            )
+            return
+        try:
+            exported = export_project_config(self._settings, target)
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, "Không thể xuất cấu hình", str(exc))
+            return
+        self._notify(f"Đã xuất cấu hình ra {exported.name}")
 
     def _load_local(self, *, show_missing: bool) -> None:
         try:
@@ -1105,6 +1224,9 @@ class LicenseAdminWindow(QMainWindow):
             self.settings_action,
             self.new_project_action,
             self.import_project_keys_action,
+            self.import_google_credentials_action,
+            self.import_project_config_action,
+            self.export_project_config_action,
         ):
             action.setEnabled(not busy)
         self.project_combo.setEnabled(not busy)

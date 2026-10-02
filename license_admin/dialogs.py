@@ -32,6 +32,8 @@ from license_admin.google_sheets import extract_spreadsheet_id
 from license_admin.icons import svg_icon
 from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.key_store import KeyPasswordRequiredError, inspect_key_pair
+from license_admin.service_account_import_dialog import ServiceAccountImportDialog
+from license_admin.service_account_store import inspect_service_account
 from license_admin.settings import AdminSettings
 
 
@@ -206,6 +208,11 @@ class SettingsDialog(QDialog):
             values.service_account_path,
             "JSON (*.json);;Tất cả file (*)",
         )
+        self.import_credentials_button = QPushButton("Nhập JSON vào project…")
+        self.import_credentials_button.setObjectName("importProjectCredentials")
+        self.import_credentials_button.setIcon(svg_icon("upload", 16))
+        self.import_credentials_button.clicked.connect(self._import_credentials)
+        google_form.addRow("", self.import_credentials_button)
         google_form.insertRow(0, "Spreadsheet", self.sheet_id_edit)
         google_form.insertRow(1, "Tên worksheet", self.worksheet_edit)
         google_form.insertRow(2, "Public CSV URL", self.public_url_edit)
@@ -297,6 +304,17 @@ class SettingsDialog(QDialog):
             imported.public_key_path.resolve(strict=False),
         )
 
+    def _import_credentials(self) -> None:
+        dialog = ServiceAccountImportDialog(
+            self,
+            project_name=self.project_name_edit.text().strip() or "Project hiện tại",
+            project_directory=self._project_directory,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        imported = dialog.imported_service_account()
+        self.credentials_edit.setText(str(imported.path))
+
     def _validate_and_accept(self) -> None:
         if not self.project_name_edit.text().strip():
             QMessageBox.warning(self, "Thiếu cấu hình", "Tên dự án không được trống.")
@@ -364,13 +382,16 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "URL không hợp lệ", "Public CSV URL phải dùng HTTPS.")
             return
         credentials = self.credentials_edit.text().strip()
-        if credentials and not Path(credentials).is_file():
-            QMessageBox.warning(
-                self,
-                "Service account không hợp lệ",
-                "Không tìm thấy service-account JSON.",
-            )
-            return
+        if credentials:
+            try:
+                inspect_service_account(Path(credentials))
+            except LicenseIssueError as exc:
+                QMessageBox.warning(
+                    self,
+                    "Service account không hợp lệ",
+                    str(exc),
+                )
+                return
         self.accept()
 
     def values(self) -> AdminSettings:

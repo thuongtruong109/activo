@@ -6,6 +6,7 @@ __pycache__/
 dist/
 build/
 *.tmp
+.env
 
 # Publisher secrets and mutable license data
 projects/*/private*.pem

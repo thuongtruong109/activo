@@ -167,6 +167,18 @@ class LicenseAdminUiTests(unittest.TestCase):
         window = self.create_window()
         try:
             self.assertIn(window.import_project_keys_action, window.project_menu.actions())
+            self.assertIn(
+                window.import_google_credentials_action,
+                window.project_menu.actions(),
+            )
+            self.assertIn(
+                window.import_project_config_action,
+                window.project_menu.actions(),
+            )
+            self.assertIn(
+                window.export_project_config_action,
+                window.project_menu.actions(),
+            )
             settings = SettingsDialog(
                 window,
                 window._settings,
@@ -179,6 +191,10 @@ class LicenseAdminUiTests(unittest.TestCase):
                 self.assertEqual(
                     settings.import_keys_button.objectName(),
                     "importProjectKeys",
+                )
+                self.assertEqual(
+                    settings.import_credentials_button.objectName(),
+                    "importProjectCredentials",
                 )
             finally:
                 settings.close()
@@ -317,6 +333,9 @@ class LicenseAdminUiTests(unittest.TestCase):
                 window.new_project_action,
                 window.open_project_folder_action,
                 window.import_project_keys_action,
+                window.import_google_credentials_action,
+                window.import_project_config_action,
+                window.export_project_config_action,
                 window.import_signed_action,
                 window.import_legacy_action,
                 window.export_action,

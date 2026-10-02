@@ -16,7 +16,9 @@ from license_admin.google_sheets import GoogleSheetsConfig, extract_spreadsheet_
 
 
 APPLICATION_ROOT = Path(__file__).resolve().parents[1]
-PROJECTS_ROOT = APPLICATION_ROOT / "projects"
+PROJECTS_ROOT = Path(
+    os.environ.get("ACTIVO_PROJECTS_ROOT") or APPLICATION_ROOT / "projects"
+).expanduser()
 PROFILE_FILENAME = "project.json"
 PROFILE_SCHEMA_VERSION = 1
 _PROJECT_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")

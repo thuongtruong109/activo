@@ -21,6 +21,7 @@ from license_admin.domain import (
     parse_signed_csv,
     serialize_signed_csv,
 )
+from license_admin.service_account_store import load_service_account
 
 
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
@@ -72,18 +73,7 @@ class GoogleSheetsClient:
             raise LicenseIssueError(
                 "Choose a Google service-account JSON file in Settings first."
             )
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise LicenseIssueError(f"Unable to read service-account JSON: {exc}") from exc
-        if not isinstance(data, dict):
-            raise LicenseIssueError("Service-account JSON must contain an object.")
-        for field in ("client_email", "private_key"):
-            if not isinstance(data.get(field), str) or not data[field].strip():
-                raise LicenseIssueError(
-                    f"Service-account JSON is missing {field!r}."
-                )
-        return data
+        return load_service_account(path)
 
     def _token(self) -> str:
         now = datetime.now(timezone.utc)
