@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+import json
 import os
 from pathlib import Path
 import unittest
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QToolBar,
     QToolButton,
+    QWidget,
 )
 
 from license_admin.app_identity import (
@@ -36,6 +39,7 @@ from license_admin.data_recovery import ProjectDataState
 from license_admin.domain import LicenseRecord
 from license_admin.flag_icons import FLAG_CDN_TEMPLATE, FlagIconLoader
 from license_admin.key_import_dialog import KeyImportDialog
+from license_admin.key_store import import_key_pair
 from license_admin.main_window import LicenseAdminWindow
 from license_admin.icons import ICON_SPRITE_PATH, svg_icon
 from license_admin.information_dialogs import (
@@ -49,6 +53,7 @@ from license_admin.modal_backdrop import ModalBackdrop
 from license_admin.popover import RoundedMenu
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
+from license_admin.service_account_store import import_service_account
 from license_admin.settings import ProjectStore
 from license_admin.theme import ADMIN_STYLESHEET, stylesheet_for
 from license_admin.ui_metrics import CONTROL_HEIGHT
@@ -431,6 +436,153 @@ class LicenseAdminUiTests(unittest.TestCase):
                 settings.close()
         finally:
             window.close()
+
+    def test_cancel_settings_discards_key_and_credential_imports(self) -> None:
+        with workspace_temp_dir() as directory:
+            root = Path(directory)
+            store = ProjectStore(root / "projects")
+            profile = store.ensure_default()
+            project_directory = store.project_directory(profile.project_id)
+
+            def write_pair(stem: str) -> tuple[Path, Path]:
+                key = rsa.generate_private_key(
+                    public_exponent=65_537,
+                    key_size=2_048,
+                )
+                private_path = root / f"{stem}-private.pem"
+                public_path = root / f"{stem}-public.pem"
+                private_path.write_bytes(
+                    key.private_bytes(
+                        serialization.Encoding.PEM,
+                        serialization.PrivateFormat.PKCS8,
+                        serialization.NoEncryption(),
+                    )
+                )
+                public_path.write_bytes(
+                    key.public_key().public_bytes(
+                        serialization.Encoding.PEM,
+                        serialization.PublicFormat.SubjectPublicKeyInfo,
+                    )
+                )
+                return private_path, public_path
+
+            def write_credential(name: str, email: str) -> Path:
+                key = rsa.generate_private_key(
+                    public_exponent=65_537,
+                    key_size=2_048,
+                )
+                path = root / name
+                path.write_text(
+                    json.dumps(
+                        {
+                            "type": "service_account",
+                            "project_id": "ui-transaction-test",
+                            "private_key": key.private_bytes(
+                                serialization.Encoding.PEM,
+                                serialization.PrivateFormat.PKCS8,
+                                serialization.NoEncryption(),
+                            ).decode("ascii"),
+                            "client_email": email,
+                            "token_uri": "https://oauth2.googleapis.com/token",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return path
+
+            old_pair = import_key_pair(*write_pair("old"), project_directory)
+            old_credential = import_service_account(
+                write_credential("old-service.json", "old@example.test"),
+                project_directory,
+            )
+            profile = replace(
+                profile,
+                signing_key_path=old_pair.private_key_path,
+                public_key_path=old_pair.public_key_path,
+                service_account_path=old_credential.path,
+            )
+            store.save(profile)
+            original_profile = store.profile_path(profile.project_id).read_bytes()
+            original_private = old_pair.private_key_path.read_bytes()
+            original_public = old_pair.public_key_path.read_bytes()
+            original_credential = old_credential.path.read_bytes()
+            new_private, new_public = write_pair("new")
+            new_credential = write_credential(
+                "new-service.json",
+                "new@example.test",
+            )
+            parent = QWidget()
+            dialog = SettingsDialog(
+                parent,
+                profile,
+                project_directory=project_directory,
+                record_count=4,
+            )
+
+            def run_key_import(key_dialog: KeyImportDialog) -> int:
+                key_dialog.private_key_edit.setText(str(new_private))
+                key_dialog.public_key_edit.setText(str(new_public))
+                with patch.object(
+                    QMessageBox,
+                    "warning",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ):
+                    key_dialog._validate_and_import()
+                return key_dialog.result()
+
+            def run_credential_import(
+                credential_dialog: ServiceAccountImportDialog,
+            ) -> int:
+                credential_dialog.source_edit.setText(str(new_credential))
+                with patch.object(
+                    QMessageBox,
+                    "warning",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ):
+                    credential_dialog._validate_and_import()
+                return credential_dialog.result()
+
+            try:
+                with patch.object(KeyImportDialog, "exec", run_key_import):
+                    dialog._import_keys()
+                with patch.object(
+                    ServiceAccountImportDialog,
+                    "exec",
+                    run_credential_import,
+                ):
+                    dialog._import_credentials()
+
+                staging_directories = list(
+                    project_directory.glob(".settings-staging-*")
+                )
+                self.assertEqual(len(staging_directories), 1)
+                self.assertIn(
+                    ".settings-assets",
+                    dialog.signing_key_edit.text(),
+                )
+                self.assertIn(
+                    ".settings-assets",
+                    dialog.credentials_edit.text(),
+                )
+                self.assertEqual(old_pair.private_key_path.read_bytes(), original_private)
+                self.assertEqual(old_pair.public_key_path.read_bytes(), original_public)
+                self.assertEqual(old_credential.path.read_bytes(), original_credential)
+                self.assertFalse((project_directory / ".settings-assets").exists())
+
+                dialog.reject()
+
+                self.assertFalse(staging_directories[0].exists())
+                self.assertEqual(
+                    store.profile_path(profile.project_id).read_bytes(),
+                    original_profile,
+                )
+                self.assertEqual(old_pair.private_key_path.read_bytes(), original_private)
+                self.assertEqual(old_pair.public_key_path.read_bytes(), original_public)
+                self.assertEqual(old_credential.path.read_bytes(), original_credential)
+                self.assertFalse((project_directory / ".settings-assets").exists())
+            finally:
+                dialog.close()
+                parent.close()
 
     def test_corrupted_data_opens_in_recovery_mode_without_overwrite(self) -> None:
         with workspace_temp_dir() as directory:

@@ -31,7 +31,7 @@ from license_admin.localization import text
 
 
 class KeyImportDialog(QDialog):
-    """Collect, validate and copy a key pair into one project directory."""
+    """Collect, validate and copy a key pair into a target or staging area."""
 
     def __init__(
         self,
@@ -40,9 +40,13 @@ class KeyImportDialog(QDialog):
         project_name: str,
         project_directory: Path,
         record_count: int,
+        install_directory: Path | None = None,
+        display_directory: Path | None = None,
     ) -> None:
         super().__init__(parent)
         self._project_directory = project_directory
+        self._install_directory = install_directory or project_directory
+        self._display_directory = display_directory or project_directory
         self._record_count = record_count
         self._imported_pair: ImportedKeyPair | None = None
         self.setWindowTitle(text("key.title", project=project_name))
@@ -80,8 +84,8 @@ class KeyImportDialog(QDialog):
             text(
                 "key.destination",
                 path=(
-                    f"{project_directory / 'private.pem'}\n"
-                    f"{project_directory / 'public.pem'}"
+                    f"{self._display_directory / 'private.pem'}\n"
+                    f"{self._display_directory / 'public.pem'}"
                 ),
             )
         )
@@ -173,17 +177,30 @@ class KeyImportDialog(QDialog):
 
         private_target = self._project_directory / "private.pem"
         public_target = self._project_directory / "public.pem"
+        install_private = self._install_directory / "private.pem"
+        install_public = self._install_directory / "public.pem"
         source_is_target = (
             private_path.resolve(strict=False) == private_target.resolve(strict=False)
             and public_path.resolve(strict=False) == public_target.resolve(strict=False)
         )
-        targets_exist = private_target.exists() or public_target.exists()
+        targets_exist = any(
+            path.exists()
+            for path in (
+                private_target,
+                public_target,
+                install_private,
+                install_public,
+            )
+        )
         if targets_exist and not source_is_target:
             changed_public_key = True
-            if public_target.is_file():
+            comparison_key = (
+                install_public if install_public.is_file() else public_target
+            )
+            if comparison_key.is_file():
                 try:
                     changed_public_key = (
-                        public_key_fingerprint(public_target) != info.fingerprint
+                        public_key_fingerprint(comparison_key) != info.fingerprint
                     )
                 except LicenseIssueError:
                     changed_public_key = True
@@ -205,9 +222,9 @@ class KeyImportDialog(QDialog):
             self._imported_pair = import_key_pair(
                 private_path,
                 public_path,
-                self._project_directory,
+                self._install_directory,
                 password=password,
-                overwrite=targets_exist,
+                overwrite=install_private.exists() or install_public.exists(),
             )
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("key.import_failed"), str(exc))

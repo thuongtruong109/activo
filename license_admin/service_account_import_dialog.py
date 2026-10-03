@@ -30,7 +30,7 @@ from license_admin.service_account_store import (
 
 
 class ServiceAccountImportDialog(QDialog):
-    """Validate and copy Google credentials into one project directory."""
+    """Validate and copy Google credentials into a target or staging area."""
 
     def __init__(
         self,
@@ -38,9 +38,13 @@ class ServiceAccountImportDialog(QDialog):
         *,
         project_name: str,
         project_directory: Path,
+        install_directory: Path | None = None,
+        display_directory: Path | None = None,
     ) -> None:
         super().__init__(parent)
         self._project_directory = project_directory
+        self._install_directory = install_directory or project_directory
+        self._display_directory = display_directory or project_directory
         self._imported: ImportedServiceAccount | None = None
         self.setWindowTitle(text("credential.title", project=project_name))
         self.setMinimumWidth(680)
@@ -71,7 +75,7 @@ class ServiceAccountImportDialog(QDialog):
         destination = QLabel(
             text(
                 "credential.destination",
-                path=project_directory / SERVICE_ACCOUNT_FILENAME,
+                path=self._display_directory / SERVICE_ACCOUNT_FILENAME,
             )
         )
         destination.setWordWrap(True)
@@ -129,11 +133,14 @@ class ServiceAccountImportDialog(QDialog):
             return
 
         target = self._project_directory / SERVICE_ACCOUNT_FILENAME
+        install_target = self._install_directory / SERVICE_ACCOUNT_FILENAME
         source_is_target = (
             source.resolve(strict=False) == target.resolve(strict=False)
         )
-        overwrite = target.exists() and not source_is_target
-        if overwrite:
+        replaces_existing = (
+            target.exists() or install_target.exists()
+        ) and not source_is_target
+        if replaces_existing:
             answer = QMessageBox.warning(
                 self,
                 text("credential.replace_title"),
@@ -146,8 +153,8 @@ class ServiceAccountImportDialog(QDialog):
         try:
             self._imported = import_service_account(
                 source,
-                self._project_directory,
-                overwrite=overwrite,
+                self._install_directory,
+                overwrite=install_target.exists(),
             )
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("credential.import_failed"), str(exc))

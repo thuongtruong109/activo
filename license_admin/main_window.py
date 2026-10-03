@@ -1527,9 +1527,8 @@ class LicenseAdminWindow(QMainWindow):
             result = dialog.exec()
         if result != dialog.DialogCode.Accepted:
             return
-        values = dialog.values()
         try:
-            self._project_store.save(values)
+            values = dialog.commit(self._project_store)
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("settings.save_failed"), str(exc))
             return

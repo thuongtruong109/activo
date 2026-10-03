@@ -18,3 +18,5 @@ projects/*/input.csv
 projects/*/service-account*.json
 projects/*/google-credentials*.json
 projects/**/.backups/
+projects/**/.settings-assets/
+projects/**/.settings-staging-*/

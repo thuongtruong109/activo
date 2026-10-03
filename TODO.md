@@ -1,20 +1,5 @@
 ## Những vấn đề phải xử lý trước production
 
-### 2. Settings chưa có tính transaction
-
-Import key hoặc Google credentials trong Settings đang ghi file thực ngay trong dialog con tại [key_import_dialog.py](D:/Projects/activo/license_admin/key_import_dialog.py:204), [service_account_import_dialog.py](D:/Projects/activo/license_admin/service_account_import_dialog.py:146) và [dialogs.py](D:/Projects/activo/license_admin/dialogs.py:330).
-
-Do đó:
-
-- Người dùng import key.
-- Sau đó bấm Cancel ở Settings.
-- Key trên disk vẫn đã thay đổi.
-- UI và dữ liệu license trong memory có thể vẫn dựa trên key cũ.
-
-Đây là lỗi kỳ vọng UX đồng thời là lỗi integrity nghiêm trọng.
-
-Cần staging toàn bộ thay đổi vào thư mục tạm, validate, rồi chỉ commit atomically khi bấm Save. Cancel phải không để lại bất kỳ side effect nào.
-
 ### 3. State trong memory thay đổi trước khi persistence thành công
 
 Các luồng create/edit/revoke/import thay đổi `_records` rồi mới lưu tại [main_window.py](D:/Projects/activo/license_admin/main_window.py:1141). Nếu save thất bại:

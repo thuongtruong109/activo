@@ -6,6 +6,7 @@ from datetime import datetime, time, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
@@ -33,7 +34,8 @@ from license_admin.key_store import KeyPasswordRequiredError, inspect_key_pair
 from license_admin.localization import text
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.service_account_store import inspect_service_account
-from license_admin.settings import AdminSettings
+from license_admin.settings import AdminSettings, ProjectStore
+from license_admin.settings_transaction import SettingsTransaction
 from license_admin.window_chrome import (
     FramelessResizeController,
     FramelessTabHeader,
@@ -166,6 +168,7 @@ class SettingsDialog(QDialog):
         self.setObjectName("settingsDialog")
         self._project_directory = project_directory
         self._record_count = record_count
+        self._transaction = SettingsTransaction(project_directory)
         self._validated_key_paths: tuple[Path, Path] | None = None
         self.setWindowTitle(text("settings.title"))
         self.setMinimumSize(720, 500)
@@ -328,36 +331,60 @@ class SettingsDialog(QDialog):
         return edit
 
     def _import_keys(self) -> None:
-        dialog = KeyImportDialog(
-            self,
-            project_name=self.project_name_edit.text().strip() or text("nav.current_project"),
-            project_directory=self._project_directory,
-            record_count=self._record_count,
-        )
+        try:
+            dialog = KeyImportDialog(
+                self,
+                project_name=(
+                    self.project_name_edit.text().strip()
+                    or text("nav.current_project")
+                ),
+                project_directory=self._project_directory,
+                record_count=self._record_count,
+                install_directory=self._transaction.key_staging_directory,
+                display_directory=self._transaction.asset_directory,
+            )
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("key.import_failed"), str(exc))
+            return
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         imported = dialog.imported_pair()
-        self.signing_key_edit.setText(str(imported.private_key_path))
-        self.public_key_edit.setText(str(imported.public_key_path))
+        self._transaction.register_key_pair(imported)
+        self.signing_key_edit.setText(str(self._transaction.private_key_path))
+        self.public_key_edit.setText(str(self._transaction.public_key_path))
         self._validated_key_paths = (
-            imported.private_key_path.resolve(strict=False),
-            imported.public_key_path.resolve(strict=False),
+            self._transaction.private_key_path.resolve(strict=False),
+            self._transaction.public_key_path.resolve(strict=False),
         )
 
     def _import_credentials(self) -> None:
-        dialog = ServiceAccountImportDialog(
-            self,
-            project_name=self.project_name_edit.text().strip() or text("nav.current_project"),
-            project_directory=self._project_directory,
-        )
+        try:
+            dialog = ServiceAccountImportDialog(
+                self,
+                project_name=(
+                    self.project_name_edit.text().strip()
+                    or text("nav.current_project")
+                ),
+                project_directory=self._project_directory,
+                install_directory=self._transaction.credential_staging_directory,
+                display_directory=self._transaction.asset_directory,
+            )
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("credential.import_failed"), str(exc))
+            return
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         imported = dialog.imported_service_account()
-        self.credentials_edit.setText(str(imported.path))
+        self._transaction.register_service_account(imported)
+        self.credentials_edit.setText(str(self._transaction.service_account_path))
 
     def _validate_and_accept(self) -> None:
         if not self.project_name_edit.text().strip():
-            QMessageBox.warning(self, text("message.missing_configuration"), text("settings.project_name"))
+            QMessageBox.warning(
+                self,
+                text("message.missing_configuration"),
+                text("settings.project_name"),
+            )
             return
         if not self.local_csv_edit.text().strip():
             QMessageBox.warning(
@@ -367,19 +394,55 @@ class SettingsDialog(QDialog):
             )
             return
         if not self.signing_key_edit.text().strip():
-            QMessageBox.warning(self, text("message.missing_configuration"), text("validation.required", field=text("settings.private_key")))
-            return
-        if not Path(self.signing_key_edit.text().strip()).is_file():
-            QMessageBox.warning(self, text("message.invalid_data"), text("validation.not_found", field=text("settings.private_key")))
-            return
-        if not self.public_key_edit.text().strip():
-            QMessageBox.warning(self, text("message.missing_configuration"), text("validation.required", field=text("settings.public_key")))
-            return
-        if not Path(self.public_key_edit.text().strip()).is_file():
-            QMessageBox.warning(self, text("message.invalid_data"), text("validation.not_found", field=text("settings.public_key")))
+            QMessageBox.warning(
+                self,
+                text("message.missing_configuration"),
+                text(
+                    "validation.required",
+                    field=text("settings.private_key"),
+                ),
+            )
             return
         private_path = Path(self.signing_key_edit.text().strip())
-        public_path = Path(self.public_key_edit.text().strip())
+        public_text = self.public_key_edit.text().strip()
+        public_path = Path(public_text) if public_text else Path()
+        staged_keys_selected = (
+            bool(public_text)
+            and self._transaction.uses_staged_key_paths(
+                private_path,
+                public_path,
+            )
+        )
+        if not staged_keys_selected and not private_path.is_file():
+            QMessageBox.warning(
+                self,
+                text("message.invalid_data"),
+                text(
+                    "validation.not_found",
+                    field=text("settings.private_key"),
+                ),
+            )
+            return
+        if not public_text:
+            QMessageBox.warning(
+                self,
+                text("message.missing_configuration"),
+                text(
+                    "validation.required",
+                    field=text("settings.public_key"),
+                ),
+            )
+            return
+        if not staged_keys_selected and not public_path.is_file():
+            QMessageBox.warning(
+                self,
+                text("message.invalid_data"),
+                text(
+                    "validation.not_found",
+                    field=text("settings.public_key"),
+                ),
+            )
+            return
         selected_paths = (
             private_path.resolve(strict=False),
             public_path.resolve(strict=False),
@@ -416,7 +479,14 @@ class SettingsDialog(QDialog):
                 QMessageBox.warning(self, text("message.invalid_data"), str(exc))
                 return
         if not self.worksheet_edit.text().strip():
-            QMessageBox.warning(self, text("message.missing_configuration"), text("validation.required", field=text("settings.worksheet")))
+            QMessageBox.warning(
+                self,
+                text("message.missing_configuration"),
+                text(
+                    "validation.required",
+                    field=text("settings.worksheet"),
+                ),
+            )
             return
         if not self.issuer_edit.text().strip() or not self.audience_edit.text().strip():
             fields = f"{text('settings.issuer')} / {text('settings.audience')}"
@@ -432,8 +502,12 @@ class SettingsDialog(QDialog):
             return
         credentials = self.credentials_edit.text().strip()
         if credentials:
+            credential_path = Path(credentials)
             try:
-                inspect_service_account(Path(credentials))
+                if not self._transaction.uses_staged_service_account(
+                    credential_path
+                ):
+                    inspect_service_account(credential_path)
             except LicenseIssueError as exc:
                 QMessageBox.warning(
                     self,
@@ -442,6 +516,30 @@ class SettingsDialog(QDialog):
                 )
                 return
         self.accept()
+
+    def reject(self) -> None:
+        try:
+            self._transaction.discard()
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("settings.save_failed"), str(exc))
+            return
+        super().reject()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self.result() != self.DialogCode.Accepted:
+            try:
+                self._transaction.discard()
+            except LicenseIssueError as exc:
+                QMessageBox.critical(self, text("settings.save_failed"), str(exc))
+                event.ignore()
+                return
+        super().closeEvent(event)
+
+    def commit(self, project_store: ProjectStore) -> AdminSettings:
+        """Commit the accepted settings and any staged imports together."""
+        if self.result() != self.DialogCode.Accepted:
+            raise LicenseIssueError("Settings must be accepted before commit.")
+        return self._transaction.commit(project_store, self.values())
 
     def values(self) -> AdminSettings:
         sheet_value = self.sheet_id_edit.text().strip()
