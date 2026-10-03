@@ -39,6 +39,14 @@ class ProjectProfileTests(unittest.TestCase):
             )
             document = json.loads(store.profile_path(loaded.project_id).read_text())
             self.assertEqual(document["schema_version"], 1)
+            profile_backups = list(
+                (
+                    store.profile_path(loaded.project_id).parent
+                    / ".backups"
+                    / "project.json"
+                ).glob("*.bak")
+            )
+            self.assertEqual(len(profile_backups), 1)
 
     def test_duplicate_or_invalid_project_id_is_rejected(self) -> None:
         with workspace_temp_dir() as directory:
@@ -61,6 +69,37 @@ class ProjectProfileTests(unittest.TestCase):
 
             with self.assertRaisesRegex(LicenseIssueError, "schema version"):
                 store.load(profile.project_id)
+
+    def test_corrupted_profile_is_isolated_from_valid_profiles(self) -> None:
+        with workspace_temp_dir() as directory:
+            store = ProjectStore(Path(directory) / "projects")
+            valid = store.create("Valid Project")
+            broken_path = store.profile_path("broken")
+            broken_path.parent.mkdir(parents=True)
+            broken_path.write_text("{not-json", encoding="utf-8")
+
+            scan = store.scan_profiles()
+
+            self.assertEqual(
+                [profile.project_id for profile in scan.profiles],
+                [valid.project_id],
+            )
+            self.assertEqual([issue.project_id for issue in scan.issues], ["broken"])
+            self.assertEqual(store.ensure_default().project_id, valid.project_id)
+
+    def test_corrupted_default_profile_is_never_overwritten(self) -> None:
+        with workspace_temp_dir() as directory:
+            store = ProjectStore(Path(directory) / "projects")
+            broken_path = store.profile_path("default")
+            broken_path.parent.mkdir(parents=True)
+            broken_content = "{not-json"
+            broken_path.write_text(broken_content, encoding="utf-8")
+
+            recovered_default = store.ensure_default()
+
+            self.assertEqual(recovered_default.project_id, "default-2")
+            self.assertEqual(broken_path.read_text(encoding="utf-8"), broken_content)
+            self.assertTrue(store.profile_path("default-2").is_file())
 
 
 if __name__ == "__main__":

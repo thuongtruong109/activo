@@ -141,8 +141,9 @@ class MetricCard(QFrame):
         layout.addLayout(copy, 1)
         layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
 
-    def set_value(self, value: int) -> None:
-        self.value_label.setText(f"{value:,}".replace(",", "."))
+    def set_value(self, value: int | str) -> None:
+        rendered = f"{value:,}".replace(",", ".") if isinstance(value, int) else value
+        self.value_label.setText(rendered)
 
     def set_texts(self, title: str, note: str) -> None:
         self.title_label.setText(title)

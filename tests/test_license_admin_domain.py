@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
@@ -15,7 +16,11 @@ from license_admin.domain import (
     serialize_signed_csv,
     validate_record_signatures,
 )
-from license_admin.storage import LicenseRepository
+from license_admin.storage import (
+    LicenseDataFailure,
+    LicenseDataLoadError,
+    LicenseRepository,
+)
 from workspace_temp import workspace_temp_dir
 
 TEST_ISSUER = "test-license-server"
@@ -109,6 +114,52 @@ class LicenseAdminDomainTests(unittest.TestCase):
             repository = LicenseRepository(Path(directory) / "licenses.csv")
             repository.save(records)
             self.assertEqual(repository.load(), records)
+
+    def test_repository_creates_versioned_backup_before_replacing_data(self) -> None:
+        now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
+        hwid = "f" * 64
+        records = parse_signed_csv(f"{hwid},{self._token(hwid, now=now)}\n")
+        with workspace_temp_dir() as directory:
+            repository = LicenseRepository(Path(directory) / "licenses.csv")
+            repository.save(records)
+            original = repository.path.read_bytes()
+
+            repository.save([])
+
+            backups = list(repository.backup_directory.glob("*.bak"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_bytes(), original)
+            self.assertEqual(repository.load(), [])
+
+    def test_repository_classifies_corrupted_csv(self) -> None:
+        with workspace_temp_dir() as directory:
+            path = Path(directory) / "licenses.csv"
+            path.write_text("hwid,token\nmissing-token\n", encoding="utf-8")
+
+            with self.assertRaises(LicenseDataLoadError) as raised:
+                LicenseRepository(path).load()
+
+            self.assertEqual(raised.exception.failure, LicenseDataFailure.CORRUPTED)
+
+    def test_failed_backup_never_replaces_existing_data(self) -> None:
+        now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
+        hwid = "f" * 64
+        records = parse_signed_csv(f"{hwid},{self._token(hwid, now=now)}\n")
+        with workspace_temp_dir() as directory:
+            repository = LicenseRepository(Path(directory) / "licenses.csv")
+            repository.save(records)
+            original = repository.path.read_bytes()
+
+            with (
+                patch(
+                    "license_admin.atomic_file.create_versioned_backup",
+                    side_effect=PermissionError("backup denied"),
+                ),
+                self.assertRaisesRegex(LicenseIssueError, "Unable to save"),
+            ):
+                repository.save([])
+
+            self.assertEqual(repository.path.read_bytes(), original)
 
 
 if __name__ == "__main__":

@@ -8,11 +8,11 @@ import os
 from pathlib import Path
 import re
 import sys
-import tempfile
 import unicodedata
 from typing import Any
 
 from issue_license import LicenseIssueError
+from license_admin.atomic_file import atomic_write_text
 from license_admin.google_sheets import GoogleSheetsConfig, extract_spreadsheet_id
 
 
@@ -94,6 +94,19 @@ class AdminSettings:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectProfileIssue:
+    project_id: str
+    path: Path
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectProfileScan:
+    profiles: tuple[AdminSettings, ...]
+    issues: tuple[ProjectProfileIssue, ...]
+
+
 class ProjectStore:
     """Persist independent publisher settings for multiple products."""
 
@@ -108,14 +121,32 @@ class ProjectStore:
         return self.profile_path(project_id).parent
 
     def list_profiles(self) -> list[AdminSettings]:
+        return list(self.scan_profiles().profiles)
+
+    def scan_profiles(self) -> ProjectProfileScan:
         if not self.root.exists():
-            return []
-        profiles = [
-            self._load_path(path)
-            for path in self.root.glob(f"*/{PROFILE_FILENAME}")
-            if path.is_file()
-        ]
-        return sorted(profiles, key=lambda profile: profile.project_name.casefold())
+            return ProjectProfileScan((), ())
+        profiles: list[AdminSettings] = []
+        issues: list[ProjectProfileIssue] = []
+        try:
+            paths = sorted(self.root.glob(f"*/{PROFILE_FILENAME}"))
+        except OSError as exc:
+            raise LicenseIssueError(
+                f"Unable to scan project profiles in {self.root}: {exc}"
+            ) from exc
+        for path in paths:
+            try:
+                profiles.append(self._load_path(path))
+            except (LicenseIssueError, OSError) as exc:
+                issues.append(
+                    ProjectProfileIssue(
+                        project_id=path.parent.name,
+                        path=path,
+                        detail=str(exc),
+                    )
+                )
+        profiles.sort(key=lambda profile: profile.project_name.casefold())
+        return ProjectProfileScan(tuple(profiles), tuple(issues))
 
     def load(self, project_id: str) -> AdminSettings:
         path = self.profile_path(project_id)
@@ -124,10 +155,25 @@ class ProjectStore:
         return self._load_path(path)
 
     def ensure_default(self) -> AdminSettings:
-        profiles = self.list_profiles()
-        if profiles:
-            return profiles[0]
-        profile = self._new_settings("Default Project", "default")
+        scan = self.scan_profiles()
+        if scan.profiles:
+            return scan.profiles[0]
+        project_id = "default"
+        suffix = 2
+        while True:
+            candidate_directory = self.root / project_id
+            try:
+                candidate_directory.stat()
+            except FileNotFoundError:
+                break
+            except OSError as exc:
+                raise LicenseIssueError(
+                    f"Unable to inspect default project directory "
+                    f"{candidate_directory}: {exc}"
+                ) from exc
+            project_id = f"default-{suffix}"
+            suffix += 1
+        profile = self._new_settings("Default Project", project_id)
         self.save(profile)
         return profile
 
@@ -174,25 +220,14 @@ class ProjectStore:
             raise LicenseIssueError(
                 "Project name, issuer and audience must not be empty."
             )
-        target = profile_directory / PROFILE_FILENAME
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{PROFILE_FILENAME}.",
-            suffix=".tmp",
-            dir=str(profile_directory),
-            text=True,
-        )
-        os.close(descriptor)
-        temporary_path = Path(temporary_name)
         try:
-            temporary_path.write_text(
+            atomic_write_text(
+                profile_directory / PROFILE_FILENAME,
                 json.dumps(document, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
-            os.replace(temporary_path, target)
         except OSError as exc:
             raise LicenseIssueError(f"Unable to save project profile: {exc}") from exc
-        finally:
-            temporary_path.unlink(missing_ok=True)
 
     def _new_settings(self, project_name: str, project_id: str) -> AdminSettings:
         profile_directory = self.root / project_id

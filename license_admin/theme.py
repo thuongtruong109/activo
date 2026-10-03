@@ -118,6 +118,21 @@ QFrame#topBar {
     background: #08121c;
     border-bottom: 1px solid #1a2937;
 }
+QFrame#dataStateBanner {
+    background: #0c2431;
+    border: 1px solid #1d5267;
+    border-radius: 9px;
+}
+QFrame#dataStateBanner[state="corrupted"],
+QFrame#dataStateBanner[state="wrong_key"],
+QFrame#dataStateBanner[state="permission_denied"],
+QFrame#dataStateBanner[state="unavailable"] {
+    background: #2a191c;
+    border-color: #6f3038;
+}
+QLabel#dataStateTitle { color: #f2f8fc; font-weight: 750; }
+QLabel#dataStateBody { color: #9fb1c0; font-size: 11px; }
+QPushButton#dataStateAction { min-width: 88px; }
 QFrame#metricCard, QFrame#tablePanel {
     background: #0e1824;
     border: 1px solid #1b2a39;
@@ -589,6 +604,19 @@ QFrame#topBar {
     background: #f7f9fc;
     border-color: #d4dce6;
 }
+QFrame#dataStateBanner {
+    background: #eaf6fb;
+    border-color: #a9d8e8;
+}
+QFrame#dataStateBanner[state="corrupted"],
+QFrame#dataStateBanner[state="wrong_key"],
+QFrame#dataStateBanner[state="permission_denied"],
+QFrame#dataStateBanner[state="unavailable"] {
+    background: #fff0f1;
+    border-color: #e5a8af;
+}
+QLabel#dataStateTitle { color: #1f2d3d; }
+QLabel#dataStateBody { color: #526477; }
 QFrame#metricCard, QFrame#tablePanel {
     background: #ffffff;
     border-color: #d8e0e9;

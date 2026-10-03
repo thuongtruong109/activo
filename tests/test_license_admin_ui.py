@@ -32,6 +32,7 @@ from license_admin.dialogs import (
     RecordDetailsDialog,
     SettingsDialog,
 )
+from license_admin.data_recovery import ProjectDataState
 from license_admin.domain import LicenseRecord
 from license_admin.flag_icons import FLAG_CDN_TEMPLATE, FlagIconLoader
 from license_admin.key_import_dialog import KeyImportDialog
@@ -430,6 +431,44 @@ class LicenseAdminUiTests(unittest.TestCase):
                 settings.close()
         finally:
             window.close()
+
+    def test_corrupted_data_opens_in_recovery_mode_without_overwrite(self) -> None:
+        with workspace_temp_dir() as directory:
+            root = Path(directory)
+            store = ProjectStore(root / "projects")
+            profile = store.ensure_default()
+            corrupted = "hwid,token\nmissing-token\n"
+            profile.local_csv_path.write_text(corrupted, encoding="utf-8")
+            qsettings = QSettings(
+                str(root / "recovery-settings.ini"),
+                QSettings.Format.IniFormat,
+            )
+            window = LicenseAdminWindow(project_store=store, qsettings=qsettings)
+            try:
+                self.assertEqual(window._data_state, ProjectDataState.CORRUPTED)
+                self.assertFalse(window.data_state_banner.isHidden())
+                self.assertIn("Recovery", window.data_state_banner.title_label.text())
+                self.assertEqual(window.total_card.value_label.text(), "—")
+                self.assertFalse(window.new_action.isEnabled())
+                self.assertFalse(window.import_signed_action.isEnabled())
+                self.assertFalse(window.pull_action.isEnabled())
+                self.assertFalse(window.push_action.isEnabled())
+                self.assertTrue(window.settings_action.isEnabled())
+                with patch.object(QMessageBox, "warning") as warning:
+                    self.assertFalse(window._save_local())
+                warning.assert_called_once()
+                self.assertEqual(
+                    profile.local_csv_path.read_text(encoding="utf-8"),
+                    corrupted,
+                )
+                profile.local_csv_path.write_text("hwid,token\n", encoding="utf-8")
+                window._retry_local_data()
+                self.assertEqual(window._data_state, ProjectDataState.EMPTY)
+                self.assertTrue(window.new_action.isEnabled())
+                self.assertTrue(window.import_signed_action.isEnabled())
+            finally:
+                window.close()
+                qsettings.clear()
 
     def test_table_filters_fit_and_clear_button_is_centered(self) -> None:
         window = self.create_window()

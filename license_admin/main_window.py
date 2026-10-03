@@ -48,6 +48,11 @@ from license_admin.dashboard_widgets import (
     SidebarButton,
     SidebarMenuButton,
 )
+from license_admin.data_recovery import (
+    ProjectDataState,
+    load_project_records,
+)
+from license_admin.data_state_banner import DataStateBanner
 from license_admin.domain import (
     LicenseRecord,
     LicenseStatus,
@@ -129,6 +134,8 @@ class LicenseAdminWindow(QMainWindow):
         self._workers: set[OperationThread] = set()
         self._busy = False
         self._records: list[LicenseRecord] = []
+        self._data_state = ProjectDataState.EMPTY
+        self._data_state_detail = ""
         self._set_project_identity()
 
         self._create_actions()
@@ -391,6 +398,13 @@ class LicenseAdminWindow(QMainWindow):
         root = QVBoxLayout(self.content_surface)
         root.setContentsMargins(12, 10, 12, 12)
         root.setSpacing(10)
+
+        self.data_state_banner = DataStateBanner()
+        self.data_state_banner.retry_requested.connect(self._retry_local_data)
+        self.data_state_banner.open_folder_requested.connect(
+            self._open_project_folder
+        )
+        root.addWidget(self.data_state_banner)
 
         self.metrics_layout = QHBoxLayout()
         self.metrics_layout.setSpacing(8)
@@ -695,6 +709,7 @@ class LicenseAdminWindow(QMainWindow):
         self._populate_status_selector()
         self.table_model.retranslate()
         self._set_sync_badge(self._sync_badge_state)
+        self._update_data_state_banner()
         self._refresh_visible_count()
         self._rebuild_project_menu()
 
@@ -771,7 +786,7 @@ class LicenseAdminWindow(QMainWindow):
 
     def _rebuild_project_menu(self) -> None:
         self.project_menu.clear()
-        profiles = self._project_store.list_profiles()
+        scan = self._project_store.scan_profiles()
         self.project_menu.addAction(self.new_project_action)
         self.project_menu.addAction(self.import_project_keys_action)
         self.project_menu.addAction(self.import_google_credentials_action)
@@ -781,8 +796,16 @@ class LicenseAdminWindow(QMainWindow):
         self.project_menu.addSeparator()
         self.project_menu.addAction(self.open_project_folder_action)
         self.project_menu.addAction(self.settings_action)
+        if scan.issues:
+            self.project_menu.addSeparator()
+            for issue in scan.issues:
+                unavailable = self.project_menu.addAction(
+                    text("project.unavailable", project=issue.project_id)
+                )
+                unavailable.setEnabled(False)
+                unavailable.setToolTip(issue.detail)
         self.project_combo.clear_items()
-        for profile in profiles:
+        for profile in scan.profiles:
             self.project_combo.add_item(profile.project_name, profile.project_id)
         self.project_combo.set_current_data(self._settings.project_id)
         self._set_project_identity()
@@ -854,10 +877,10 @@ class LicenseAdminWindow(QMainWindow):
         try:
             self._project_store.save(updated)
             self._settings = updated
-            self._records = self._verified_records(self._records)
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("project.update_failed"), str(exc))
             return
+        self._load_local(show_missing=True)
         self._refresh_view()
         self._notify(
             text(
@@ -917,15 +940,12 @@ class LicenseAdminWindow(QMainWindow):
         previous = self._settings
         self._settings = updated
         try:
-            verified = (
-                self._verified_records(self._records) if self._records else []
-            )
             self._project_store.save(updated)
         except LicenseIssueError as exc:
             self._settings = previous
             QMessageBox.critical(self, text("config.apply_failed"), str(exc))
             return
-        self._records = verified
+        self._load_local(show_missing=True)
         self._set_project_identity()
         self._rebuild_project_menu()
         self._refresh_view()
@@ -958,23 +978,85 @@ class LicenseAdminWindow(QMainWindow):
         self._notify(text("config.exported", file=exported.name))
 
     def _load_local(self, *, show_missing: bool) -> None:
-        try:
-            self._records = self._verified_records(
-                LicenseRepository(self._settings.local_csv_path).load()
+        result = load_project_records(self._settings)
+        self._records = list(result.records)
+        self._data_state = result.state
+        self._data_state_detail = result.detail
+        self._update_data_state_banner()
+        self._update_action_states()
+        if show_missing and not result.state.allows_writes:
+            QMessageBox.critical(
+                self,
+                text("data.open_failed"),
+                f"{self._data_state_title()}\n\n{result.detail}",
             )
-        except LicenseIssueError as exc:
-            if show_missing:
-                QMessageBox.critical(self, text("data.open_failed"), str(exc))
-            self._records = []
+
+    def _retry_local_data(self) -> None:
+        self._load_local(show_missing=True)
+        self._refresh_view()
 
     def _save_local(self) -> bool:
+        if not self._ensure_data_writable():
+            return False
         try:
             LicenseRepository(self._settings.local_csv_path).save(self._records)
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("data.save_failed"), str(exc))
             return False
+        self._data_state = (
+            ProjectDataState.READY if self._records else ProjectDataState.EMPTY
+        )
+        self._data_state_detail = ""
+        self._update_data_state_banner()
+        self._update_action_states()
         self._set_sync_badge("dirty")
         return True
+
+    def _ensure_data_writable(self) -> bool:
+        if self._data_state.allows_writes:
+            return True
+        QMessageBox.warning(
+            self,
+            text("data.read_only_title"),
+            text("data.read_only_body", state=self._data_state_title()),
+        )
+        return False
+
+    def _data_state_title(self) -> str:
+        key = {
+            ProjectDataState.EMPTY: "data.empty_title",
+            ProjectDataState.READY: "data.ready_title",
+            ProjectDataState.CORRUPTED: "data.corrupted_title",
+            ProjectDataState.WRONG_KEY: "data.wrong_key_title",
+            ProjectDataState.PERMISSION_DENIED: "data.permission_title",
+            ProjectDataState.UNAVAILABLE: "data.unavailable_title",
+        }[self._data_state]
+        return text(key)
+
+    def _update_data_state_banner(self) -> None:
+        if not hasattr(self, "data_state_banner"):
+            return
+        if self._data_state is ProjectDataState.READY:
+            self.data_state_banner.hide()
+            return
+        body_key = {
+            ProjectDataState.EMPTY: "data.empty_body",
+            ProjectDataState.CORRUPTED: "data.corrupted_body",
+            ProjectDataState.WRONG_KEY: "data.wrong_key_body",
+            ProjectDataState.PERMISSION_DENIED: "data.permission_body",
+            ProjectDataState.UNAVAILABLE: "data.unavailable_body",
+        }.get(self._data_state, "data.unavailable_body")
+        recovery = not self._data_state.allows_writes
+        self.data_state_banner.set_content(
+            state=self._data_state.value,
+            title=self._data_state_title(),
+            body=text(body_key),
+            retry_label=text("data.retry"),
+            open_folder_label=text("action.open_project_folder"),
+            recovery=recovery,
+            detail=self._data_state_detail,
+        )
+        self.data_state_banner.show()
 
     def _verified_records(self, records: list[LicenseRecord]) -> list[LicenseRecord]:
         try:
@@ -997,14 +1079,21 @@ class LicenseAdminWindow(QMainWindow):
         expiring_count = statuses.count(LicenseStatus.EXPIRING)
         expired_count = statuses.count(LicenseStatus.EXPIRED)
         invalid_count = statuses.count(LicenseStatus.INVALID)
-        self.total_card.set_value(len(self._records))
-        self.active_card.set_value(active_count)
-        self.expiring_card.set_value(expiring_count)
-        self.expired_card.set_value(expired_count + invalid_count)
+        if self._data_state.allows_writes:
+            self.total_card.set_value(len(self._records))
+            self.active_card.set_value(active_count)
+            self.expiring_card.set_value(expiring_count)
+            self.expired_card.set_value(expired_count + invalid_count)
+        else:
+            for card in self.metric_cards:
+                card.set_value("—")
         self._refresh_visible_count()
         self._selection_changed()
 
     def _refresh_visible_count(self) -> None:
+        if not self._data_state.allows_writes:
+            self.visible_label.setText(text("data.unavailable_short"))
+            return
         self.visible_label.setText(
             text(
                 "table.visible",
@@ -1019,10 +1108,14 @@ class LicenseAdminWindow(QMainWindow):
         self._refresh_visible_count()
 
     def _selection_changed(self, _selected: QItemSelection | None = None, _deselected: QItemSelection | None = None) -> None:
-        enabled = self._selected_record() is not None and not self._busy
-        self.edit_action.setEnabled(enabled)
-        self.revoke_action.setEnabled(enabled)
-        self.details_action.setEnabled(enabled)
+        selected = self._selected_record() is not None
+        self.edit_action.setEnabled(
+            selected and not self._busy and self._data_state.allows_writes
+        )
+        self.revoke_action.setEnabled(
+            selected and not self._busy and self._data_state.allows_writes
+        )
+        self.details_action.setEnabled(selected and not self._busy)
 
     def _selected_record(self) -> LicenseRecord | None:
         rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
@@ -1077,12 +1170,16 @@ class LicenseAdminWindow(QMainWindow):
                 return None
 
     def _add_license(self) -> None:
+        if not self._ensure_data_writable():
+            return
         dialog = LicenseEditorDialog(self)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         self._apply_license_editor(dialog, None)
 
     def _edit_license(self) -> None:
+        if not self._ensure_data_writable():
+            return
         record = self._selected_record()
         if record is None:
             return
@@ -1096,6 +1193,8 @@ class LicenseAdminWindow(QMainWindow):
         dialog: LicenseEditorDialog,
         original: LicenseRecord | None,
     ) -> None:
+        if not self._ensure_data_writable():
+            return
         username, hwid, expires_at = dialog.values()
         collision = next(
             (
@@ -1157,6 +1256,8 @@ class LicenseAdminWindow(QMainWindow):
             )
 
     def _revoke_license(self) -> None:
+        if not self._ensure_data_writable():
+            return
         record = self._selected_record()
         if record is None:
             return
@@ -1180,6 +1281,8 @@ class LicenseAdminWindow(QMainWindow):
             RecordDetailsDialog(self, record).exec()
 
     def _merge_imported(self, imported: list[LicenseRecord], source_name: str) -> None:
+        if not self._ensure_data_writable():
+            return
         imported = self._verified_records(imported)
         if not imported:
             self._notify(text("import.empty"), tone="info")
@@ -1210,6 +1313,8 @@ class LicenseAdminWindow(QMainWindow):
             self._notify(text("import.imported", count=len(imported)))
 
     def _import_signed(self) -> None:
+        if not self._ensure_data_writable():
+            return
         filename, _ = QFileDialog.getOpenFileName(
             self, text("action.import_signed"), "", f"CSV (*.csv);;{text('common.all_files')}"
         )
@@ -1223,6 +1328,8 @@ class LicenseAdminWindow(QMainWindow):
         self._merge_imported(imported, Path(filename).name)
 
     def _import_legacy(self) -> None:
+        if not self._ensure_data_writable():
+            return
         filename, _ = QFileDialog.getOpenFileName(
             self, text("action.import_legacy"), "", f"CSV (*.csv);;{text('common.all_files')}"
         )
@@ -1271,6 +1378,8 @@ class LicenseAdminWindow(QMainWindow):
         return GoogleSheetsClient(self._settings.sheets_config())
 
     def _pull_sheet(self) -> None:
+        if not self._ensure_data_writable():
+            return
         if self._records:
             answer = QMessageBox.question(
                 self,
@@ -1301,6 +1410,8 @@ class LicenseAdminWindow(QMainWindow):
         self._run_operation(text("sheet.pulling"), operation, complete)
 
     def _push_sheet(self, *, force: bool = False) -> None:
+        if not self._ensure_data_writable():
+            return
         invalid_count = sum(
             record.status() is LicenseStatus.INVALID for record in self._records
         )
@@ -1370,6 +1481,8 @@ class LicenseAdminWindow(QMainWindow):
         self._run_operation(text("sheet.syncing"), operation, complete)
 
     def _format_sheet(self) -> None:
+        if not self._ensure_data_writable():
+            return
         try:
             client = self._sheet_client()
         except LicenseIssueError as exc:
@@ -1402,7 +1515,6 @@ class LicenseAdminWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl(url))
 
     def _show_settings(self) -> None:
-        previous_path = self._settings.local_csv_path
         dialog = SettingsDialog(
             self,
             self._settings,
@@ -1423,14 +1535,7 @@ class LicenseAdminWindow(QMainWindow):
             return
         self._settings = values
         self._qsettings.setValue("projects/active", values.project_id)
-        if self._settings.local_csv_path != previous_path:
-            self._load_local(show_missing=True)
-        else:
-            try:
-                self._records = self._verified_records(self._records)
-            except LicenseIssueError as exc:
-                QMessageBox.critical(self, text("settings.verify_failed"), str(exc))
-                self._records = []
+        self._load_local(show_missing=True)
         self._set_project_identity()
         self._rebuild_project_menu()
         self._refresh_view()
@@ -1469,11 +1574,29 @@ class LicenseAdminWindow(QMainWindow):
 
     def _set_busy(self, busy: bool, _message: str) -> None:
         self._busy = busy
+        self._update_action_states()
+        self.table.setEnabled(not busy)
+        if busy:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        elif QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
+        self._selection_changed()
+
+    def _update_action_states(self) -> None:
+        if not hasattr(self, "new_action"):
+            return
+        idle = not self._busy
+        writable = self._data_state.allows_writes
         for action in (
             self.new_action,
             self.pull_action,
             self.push_action,
             self.format_action,
+            self.import_signed_action,
+            self.import_legacy_action,
+        ):
+            action.setEnabled(idle and writable)
+        for action in (
             self.test_action,
             self.settings_action,
             self.new_project_action,
@@ -1481,16 +1604,17 @@ class LicenseAdminWindow(QMainWindow):
             self.import_google_credentials_action,
             self.import_project_config_action,
             self.export_project_config_action,
+            self.open_project_folder_action,
+            self.open_sheet_action,
         ):
-            action.setEnabled(not busy)
-        self.project_combo.setEnabled(not busy)
-        self.primary_action_button.setEnabled(not busy)
-        self.table.setEnabled(not busy)
-        if busy:
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        elif QApplication.overrideCursor() is not None:
-            QApplication.restoreOverrideCursor()
-        self._selection_changed()
+            action.setEnabled(idle)
+        self.export_action.setEnabled(idle and writable)
+        if hasattr(self, "project_combo"):
+            self.project_combo.setEnabled(idle)
+            self.primary_action_button.setEnabled(idle and writable)
+            self.new_sidebar_button.setEnabled(idle and writable)
+            self.data_state_banner.retry_button.setEnabled(idle)
+            self.data_state_banner.open_folder_button.setEnabled(idle)
 
     def _digest_key(self) -> str:
         return (
