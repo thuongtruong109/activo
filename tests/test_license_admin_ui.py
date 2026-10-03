@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
 import json
 import os
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from issue_license import LicenseIssueError
 from license_admin.app_identity import (
     APP_ICON_PATH,
     APP_LOGO_PATH,
@@ -52,9 +54,11 @@ from license_admin.localization import DEFAULT_LANGUAGE, LANGUAGES, set_language
 from license_admin.modal_backdrop import ModalBackdrop
 from license_admin.popover import RoundedMenu
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
+from license_admin.record_transaction import RecordTransaction
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.service_account_store import import_service_account
 from license_admin.settings import ProjectStore
+from license_admin.storage import LicenseRepository
 from license_admin.theme import ADMIN_STYLESHEET, stylesheet_for
 from license_admin.ui_metrics import CONTROL_HEIGHT
 from license_admin.window_chrome import DraggableFrame
@@ -607,7 +611,11 @@ class LicenseAdminUiTests(unittest.TestCase):
                 self.assertFalse(window.push_action.isEnabled())
                 self.assertTrue(window.settings_action.isEnabled())
                 with patch.object(QMessageBox, "warning") as warning:
-                    self.assertFalse(window._save_local())
+                    self.assertIsNone(
+                        window._commit_records(
+                            RecordTransaction.from_records(window._records)
+                        )
+                    )
                 warning.assert_called_once()
                 self.assertEqual(
                     profile.local_csv_path.read_text(encoding="utf-8"),
@@ -621,6 +629,121 @@ class LicenseAdminUiTests(unittest.TestCase):
             finally:
                 window.close()
                 qsettings.clear()
+
+    def test_failed_record_commit_preserves_memory_table_and_sync_state(self) -> None:
+        window = self.create_window()
+        try:
+            original = [
+                LicenseRecord(
+                    hwid="original-hwid",
+                    token="original-token",
+                    username="Original",
+                )
+            ]
+            candidate = [
+                LicenseRecord(
+                    hwid="candidate-hwid",
+                    token="candidate-token",
+                    username="Candidate",
+                )
+            ]
+            window._records = original
+            window._data_state = ProjectDataState.READY
+            window._data_state_detail = "unchanged detail"
+            window._set_sync_badge("synced")
+            window._refresh_view()
+            data_path = window._settings.local_csv_path
+            existed_before = data_path.exists()
+            bytes_before = data_path.read_bytes() if existed_before else None
+
+            def fail_save(
+                _repository: object,
+                records: Iterable[LicenseRecord],
+            ) -> None:
+                self.assertIs(window._records, original)
+                self.assertEqual(window.table_model.records, original)
+                self.assertEqual(tuple(records), tuple(candidate))
+                self.assertEqual(window._sync_badge_state, "synced")
+                raise LicenseIssueError("simulated write failure")
+
+            with (
+                patch.object(
+                    LicenseRepository,
+                    "save",
+                    autospec=True,
+                    side_effect=fail_save,
+                ),
+                patch.object(QMessageBox, "critical") as critical,
+                patch.object(window.toast, "show_message") as toast,
+            ):
+                committed = window._commit_records(
+                    RecordTransaction.from_records(candidate)
+                )
+
+            self.assertIsNone(committed)
+            self.assertIs(window._records, original)
+            self.assertEqual(window.table_model.records, original)
+            self.assertEqual(window._data_state, ProjectDataState.READY)
+            self.assertEqual(window._data_state_detail, "unchanged detail")
+            self.assertEqual(window._sync_badge_state, "synced")
+            self.assertEqual(data_path.exists(), existed_before)
+            if existed_before:
+                self.assertEqual(data_path.read_bytes(), bytes_before)
+            critical.assert_called_once()
+            toast.assert_not_called()
+        finally:
+            window.close()
+
+    def test_successful_record_commit_swaps_state_only_after_persistence(self) -> None:
+        window = self.create_window()
+        try:
+            original = [
+                LicenseRecord(
+                    hwid="original-hwid",
+                    token="original-token",
+                    username="Original",
+                )
+            ]
+            candidate = [
+                LicenseRecord(
+                    hwid="candidate-hwid",
+                    token="candidate-token",
+                    username="Candidate",
+                )
+            ]
+            window._records = original
+            window._data_state = ProjectDataState.READY
+            window._set_sync_badge("synced")
+            window._refresh_view()
+
+            def save(
+                _repository: object,
+                records: Iterable[LicenseRecord],
+            ) -> None:
+                self.assertIs(window._records, original)
+                self.assertEqual(window.table_model.records, original)
+                self.assertEqual(tuple(records), tuple(candidate))
+                self.assertEqual(window._sync_badge_state, "synced")
+
+            with patch.object(
+                LicenseRepository,
+                "save",
+                autospec=True,
+                side_effect=save,
+            ) as persist:
+                committed = window._commit_records(
+                    RecordTransaction.from_records(candidate)
+                )
+
+            self.assertEqual(committed, tuple(candidate))
+            persist.assert_called_once()
+            self.assertIsNot(window._records, candidate)
+            self.assertEqual(window._records, candidate)
+            self.assertEqual(window.table_model.records, candidate)
+            self.assertEqual(window._data_state, ProjectDataState.READY)
+            self.assertEqual(window._sync_badge_state, "dirty")
+        finally:
+            window.close()
 
     def test_table_filters_fit_and_clear_button_is_centered(self) -> None:
         window = self.create_window()

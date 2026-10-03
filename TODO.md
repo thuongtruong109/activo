@@ -1,19 +1,3 @@
-## Những vấn đề phải xử lý trước production
-
-### 3. State trong memory thay đổi trước khi persistence thành công
-
-Các luồng create/edit/revoke/import thay đổi `_records` rồi mới lưu tại [main_window.py](D:/Projects/activo/license_admin/main_window.py:1141). Nếu save thất bại:
-
-- UI có thể hiển thị state mới.
-- Disk vẫn là state cũ.
-- Người dùng tưởng thao tác đã thành công.
-
-Nên dùng một application transaction:
-
-`validate → tạo snapshot mới → persist thành công → swap state → notify UI`
-
-Nếu persistence thất bại, UI phải giữ nguyên state cũ.
-
 ### 4. Đồng bộ Google Sheets có race condition và overwrite risk
 
 Hiện có các rủi ro:

@@ -85,6 +85,7 @@ from license_admin.project_config import (
 )
 from license_admin.project_selector import ProjectSelector
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
+from license_admin.record_transaction import RecordTransaction
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.settings import AdminSettings, ProjectStore
 from license_admin.storage import LicenseRepository
@@ -937,14 +938,12 @@ class LicenseAdminWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        previous = self._settings
-        self._settings = updated
         try:
             self._project_store.save(updated)
         except LicenseIssueError as exc:
-            self._settings = previous
             QMessageBox.critical(self, text("config.apply_failed"), str(exc))
             return
+        self._settings = updated
         self._load_local(show_missing=True)
         self._set_project_identity()
         self._rebuild_project_menu()
@@ -995,14 +994,21 @@ class LicenseAdminWindow(QMainWindow):
         self._load_local(show_missing=True)
         self._refresh_view()
 
-    def _save_local(self) -> bool:
+    def _commit_records(
+        self,
+        transaction: RecordTransaction,
+    ) -> tuple[LicenseRecord, ...] | None:
+        """Persist a candidate snapshot before publishing it to the UI state."""
         if not self._ensure_data_writable():
-            return False
+            return None
         try:
-            LicenseRepository(self._settings.local_csv_path).save(self._records)
+            snapshot = transaction.commit(
+                LicenseRepository(self._settings.local_csv_path)
+            )
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("data.save_failed"), str(exc))
-            return False
+            return None
+        self._records = list(snapshot)
         self._data_state = (
             ProjectDataState.READY if self._records else ProjectDataState.EMPTY
         )
@@ -1010,7 +1016,8 @@ class LicenseAdminWindow(QMainWindow):
         self._update_data_state_banner()
         self._update_action_states()
         self._set_sync_badge("dirty")
-        return True
+        self._refresh_view()
+        return snapshot
 
     def _ensure_data_writable(self) -> bool:
         if self._data_state.allows_writes:
@@ -1237,12 +1244,12 @@ class LicenseAdminWindow(QMainWindow):
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("license.sign_failed"), str(exc))
             return
-        if original is not None:
-            self._records = [item for item in self._records if item.hwid != original.hwid]
-        self._records.append(new_record)
-        self._records.sort(key=lambda item: (item.username.casefold(), item.hwid))
-        if self._save_local():
-            self._refresh_view()
+        transaction = RecordTransaction.upsert(
+            self._records,
+            new_record,
+            original_hwid=original.hwid if original is not None else None,
+        )
+        if self._commit_records(transaction) is not None:
             self._notify(
                 text(
                     "license.saved",
@@ -1270,9 +1277,8 @@ class LicenseAdminWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self._records = [item for item in self._records if item.hwid != record.hwid]
-        if self._save_local():
-            self._refresh_view()
+        transaction = RecordTransaction.revoke(self._records, record.hwid)
+        if self._commit_records(transaction) is not None:
             self._notify(text("license.revoked"))
 
     def _show_details(self) -> None:
@@ -1280,13 +1286,17 @@ class LicenseAdminWindow(QMainWindow):
         if record is not None:
             RecordDetailsDialog(self, record).exec()
 
-    def _merge_imported(self, imported: list[LicenseRecord], source_name: str) -> None:
+    def _merge_imported(self, imported: list[LicenseRecord], source_name: str) -> bool:
         if not self._ensure_data_writable():
-            return
-        imported = self._verified_records(imported)
+            return False
+        try:
+            imported = self._verified_records(imported)
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("import.failed"), str(exc))
+            return False
         if not imported:
             self._notify(text("import.empty"), tone="info")
-            return
+            return True
         box = QMessageBox(self)
         box.setWindowTitle(text("import.title"))
         box.setText(text("import.read", count=len(imported), source=source_name))
@@ -1300,17 +1310,15 @@ class LicenseAdminWindow(QMainWindow):
         box.addButton(QMessageBox.StandardButton.Cancel)
         box.exec()
         if box.clickedButton() is merge_button:
-            merged = {record.hwid: record for record in self._records}
-            merged.update({record.hwid: record for record in imported})
-            self._records = list(merged.values())
+            transaction = RecordTransaction.merge(self._records, imported)
         elif box.clickedButton() is replace_button:
-            self._records = list(imported)
+            transaction = RecordTransaction.sorted_records(imported)
         else:
-            return
-        self._records.sort(key=lambda item: (item.username.casefold(), item.hwid))
-        if self._save_local():
-            self._refresh_view()
+            return False
+        if self._commit_records(transaction) is not None:
             self._notify(text("import.imported", count=len(imported)))
+            return True
+        return False
 
     def _import_signed(self) -> None:
         if not self._ensure_data_writable():
@@ -1349,8 +1357,8 @@ class LicenseAdminWindow(QMainWindow):
         except (OSError, UnicodeError, LicenseIssueError) as exc:
             QMessageBox.critical(self, text("import.legacy_failed"), str(exc))
             return
-        self._merge_imported(imported, Path(filename).name)
-        if result.skipped_expired_count:
+        completed = self._merge_imported(imported, Path(filename).name)
+        if completed and result.skipped_expired_count:
             self._notify(
                 text("import.skipped", count=result.skipped_expired_count),
                 tone="info",
@@ -1401,11 +1409,14 @@ class LicenseAdminWindow(QMainWindow):
         def complete(records: Any) -> None:
             if not isinstance(records, list):
                 raise RuntimeError("Unexpected Sheet result.")
-            self._records = records
-            if self._save_local():
-                self._refresh_view()
-                self._set_remote_digest(records)
-                self._mark_synced(text("sheet.pulled", count=len(records)))
+            transaction = RecordTransaction.from_records(records)
+            committed = self._commit_records(transaction)
+            if committed is not None:
+                committed_records = list(committed)
+                self._set_remote_digest(committed_records)
+                self._mark_synced(
+                    text("sheet.pulled", count=len(committed_records))
+                )
 
         self._run_operation(text("sheet.pulling"), operation, complete)
 
