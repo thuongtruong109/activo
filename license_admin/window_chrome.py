@@ -65,41 +65,65 @@ class WindowControls(DraggableFrame):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(2)
         self.minimize_button = self._button(
             "trafficMinimize",
             text("chrome.minimize"),
+            "−",
             target.showMinimized,
         )
         self.maximize_button = self._button(
             "trafficMaximize",
             text("chrome.maximize"),
+            "□",
             lambda: _toggle_maximized(target),
         )
         self.close_button = self._button(
             "trafficClose",
             text("chrome.close"),
+            "×",
             target.close,
         )
         layout.addWidget(self.minimize_button)
         layout.addWidget(self.maximize_button)
         layout.addWidget(self.close_button)
+        target.installEventFilter(self)
+        self._update_maximize_control()
 
     def retranslate(self) -> None:
-        self.close_button.setToolTip(text("chrome.close"))
-        self.minimize_button.setToolTip(text("chrome.minimize"))
-        self.maximize_button.setToolTip(text("chrome.maximize"))
+        for button, label in (
+            (self.close_button, text("chrome.close")),
+            (self.minimize_button, text("chrome.minimize")),
+        ):
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+        self._update_maximize_control()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self._target and event.type() == QEvent.Type.WindowStateChange:
+            self._update_maximize_control()
+        return super().eventFilter(watched, event)
+
+    def _update_maximize_control(self) -> None:
+        maximized = self._target.isMaximized()
+        label = text("chrome.restore" if maximized else "chrome.maximize")
+        self.maximize_button.setText("❐" if maximized else "□")
+        self.maximize_button.setToolTip(label)
+        self.maximize_button.setAccessibleName(label)
 
     def _button(
         self,
         object_name: str,
         tooltip: str,
+        glyph: str,
         callback: Callable[[], object],
     ) -> QPushButton:
-        button = QPushButton()
+        button = QPushButton(glyph)
         button.setObjectName(object_name)
         button.setToolTip(tooltip)
-        button.setFixedSize(12, 12)
+        button.setAccessibleName(tooltip)
+        button.setFixedSize(32, 32)
+        button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.clicked.connect(callback)
         return button
@@ -130,6 +154,7 @@ class FramelessTabHeader(QFrame):
         self.close_button.setObjectName("modalCloseButton")
         self.close_button.setText("×")
         self.close_button.setToolTip(text("chrome.close"))
+        self.close_button.setAccessibleName(text("chrome.close"))
         self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.close_button.setFixedSize(28, 28)
         self.close_button.clicked.connect(target.close)

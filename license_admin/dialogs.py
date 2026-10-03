@@ -312,6 +312,8 @@ class SettingsDialog(QDialog):
         edit = QLineEdit(str(value) if value else "")
         button = QPushButton(text("common.choose"))
         button.setIcon(svg_icon("folder", 16))
+        button.setAccessibleName(f"{text('common.choose')} {label}")
+        button.setToolTip(label)
 
         def browse() -> None:
             if save:

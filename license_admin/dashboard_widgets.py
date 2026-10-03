@@ -15,12 +15,14 @@ from PySide6.QtWidgets import (
 )
 
 from license_admin.icons import icon_pixmap, svg_icon
+from license_admin.accessibility import set_accessible_text
 
 
 class SidebarButton(QPushButton):
     def __init__(self, text: str, icon_name: str, *, active: bool = False) -> None:
         super().__init__(text)
         self._label = text
+        set_accessible_text(self, name=text)
         self.setObjectName("sidebarButton")
         self.setProperty("active", active)
         self.setIcon(svg_icon(icon_name))
@@ -41,6 +43,7 @@ class SidebarButton(QPushButton):
 
     def set_label(self, label: str) -> None:
         self._label = label
+        set_accessible_text(self, name=label)
         self.setText("" if self.property("collapsed") else label)
         self.setToolTip(label if self.property("collapsed") else "")
 
@@ -56,6 +59,7 @@ class SidebarMenuButton(QToolButton):
     def __init__(self, text: str, icon_name: str) -> None:
         super().__init__()
         self._label = text
+        set_accessible_text(self, name=text)
         self.setText(text)
         self.setObjectName("sidebarButton")
         self.setIcon(svg_icon(icon_name))
@@ -76,6 +80,7 @@ class SidebarMenuButton(QToolButton):
 
     def set_label(self, label: str) -> None:
         self._label = label
+        set_accessible_text(self, name=label)
         self.setText("" if self.property("collapsed") else label)
         self.setToolTip(label if self.property("collapsed") else "")
 

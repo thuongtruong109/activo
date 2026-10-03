@@ -51,8 +51,13 @@ class ThemeToggle(QFrame):
             self.mode_changed.emit(normalized)
 
     def retranslate(self) -> None:
-        self.light_button.setText(text("theme.light"))
-        self.dark_button.setText(text("theme.dark"))
+        for button, label in (
+            (self.light_button, text("theme.light")),
+            (self.dark_button, text("theme.dark")),
+        ):
+            button.setText(label)
+            button.setAccessibleName(label)
+            button.setToolTip(label)
 
     @staticmethod
     def _set_active(button: QPushButton, active: bool) -> None:

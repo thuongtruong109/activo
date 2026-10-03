@@ -64,11 +64,15 @@ class ServiceAccountImportDialog(QDialog):
         self.source_edit = QLineEdit()
         self.source_edit.setObjectName("importServiceAccount")
         self.source_edit.setPlaceholderText(text("credential.placeholder"))
-        browse_button = QPushButton(text("common.choose"))
-        browse_button.setIcon(svg_icon("folder", 16))
-        browse_button.clicked.connect(self._browse)
+        self.browse_button = QPushButton(text("common.choose"))
+        self.browse_button.setIcon(svg_icon("folder", 16))
+        self.browse_button.setAccessibleName(
+            f"{text('common.choose')} {text('credential.source')}"
+        )
+        self.browse_button.setToolTip(text("credential.source"))
+        self.browse_button.clicked.connect(self._browse)
         row.addWidget(self.source_edit, 1)
-        row.addWidget(browse_button)
+        row.addWidget(self.browse_button)
         form.addRow(text("credential.source"), container)
         layout.addLayout(form)
 

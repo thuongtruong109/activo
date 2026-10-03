@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QStackedWidget,
     QTableView,
     QToolButton,
     QVBoxLayout,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from issue_license import LicenseIssueError, issue_license_until
+from license_admin.accessibility import announce, set_accessible_text
 from license_admin.app_identity import app_icon, app_logo_pixmap
 from license_admin.dialogs import (
     LicenseEditorDialog,
@@ -130,6 +132,7 @@ from license_admin.sync_models import (
     SyncTargetKind,
     build_sync_diff,
 )
+from license_admin.table_state import TableStatePanel
 from license_admin.toast import Toast
 from license_admin.theme import apply_theme
 from license_admin.theme_toggle import ThemeToggle
@@ -197,6 +200,8 @@ class LicenseAdminWindow(QMainWindow):
         self._revocations: tuple[RevocationEntry, ...] = ()
         self._data_state = ProjectDataState.EMPTY
         self._data_state_detail = ""
+        self._table_operation_error: tuple[str, str] | None = None
+        self._last_operation_retry: Callable[[], None] | None = None
         self._set_project_identity()
 
         self._create_actions()
@@ -361,7 +366,9 @@ class LicenseAdminWindow(QMainWindow):
         self.sidebar_toggle = QToolButton()
         self.sidebar_toggle.setObjectName("sidebarToggle")
         self.sidebar_toggle.setFixedSize(28, 28)
+        self.sidebar_toggle.setCheckable(True)
         self.sidebar_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sidebar_toggle.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.sidebar_toggle.clicked.connect(self._toggle_sidebar)
         self.sidebar_header_layout.addWidget(self.sidebar_toggle)
         sidebar_layout.addWidget(self.sidebar_header)
@@ -411,6 +418,8 @@ class LicenseAdminWindow(QMainWindow):
         top_bar_layout.setContentsMargins(12, 8, 12, 8)
         top_bar_layout.setSpacing(8)
         self.project_combo = ProjectSelector()
+        self.project_combo.set_pinned_ids(self._load_pinned_project_ids())
+        self.project_combo.pinned_changed.connect(self._store_pinned_project_ids)
         top_bar_layout.addWidget(self.project_combo)
         self.primary_action_button = QPushButton(text("action.new_license"))
         self.primary_action_button.setObjectName("primaryButton")
@@ -421,6 +430,17 @@ class LicenseAdminWindow(QMainWindow):
         self.primary_action_button.clicked.connect(self.new_action.trigger)
         top_bar_layout.addWidget(
             self.primary_action_button,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
+        self.busy_status = QLabel()
+        self.busy_status.setObjectName("busyStatus")
+        set_accessible_text(
+            self.busy_status,
+            name=text("accessibility.application_status"),
+        )
+        self.busy_status.hide()
+        top_bar_layout.addWidget(
+            self.busy_status,
             alignment=Qt.AlignmentFlag.AlignVCenter,
         )
         top_bar_layout.addStretch(1)
@@ -550,6 +570,7 @@ class LicenseAdminWindow(QMainWindow):
         self.search_edit = QLineEdit()
         self.search_edit.setObjectName("dashboardSearch")
         self.search_edit.setPlaceholderText(text("dashboard.search"))
+        self.search_edit.setAccessibleName(text("accessibility.search_licenses"))
         self._search_icon_action = self.search_edit.addAction(
             svg_icon("search", 16), QLineEdit.ActionPosition.LeadingPosition
         )
@@ -565,6 +586,7 @@ class LicenseAdminWindow(QMainWindow):
             QSizePolicy.Policy.Fixed,
         )
         self.status_combo = PopoverSelect()
+        self.status_combo.setAccessibleName(text("accessibility.status_filter"))
         self.status_combo.setFixedWidth(150)
         self.status_combo.setFixedHeight(CONTROL_HEIGHT)
         self._populate_status_selector()
@@ -592,10 +614,11 @@ class LicenseAdminWindow(QMainWindow):
         )
         table_panel_layout.addWidget(self.table_header)
 
-        self.table_model = LicenseTableModel()
+        self.table_model = LicenseTableModel(self._theme_mode)
         self.proxy_model = LicenseFilterModel()
         self.proxy_model.setSourceModel(self.table_model)
         self.table = QTableView()
+        self.table.setAccessibleName(text("accessibility.license_table"))
         self.table.setModel(self.proxy_model)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -616,7 +639,7 @@ class LicenseAdminWindow(QMainWindow):
             3,
             QHeaderView.ResizeMode.ResizeToContents,
         )
-        self.table.verticalHeader().setVisible(True)
+        self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(32)
         self.table.verticalHeader().setMinimumWidth(42)
         self.table.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -625,7 +648,12 @@ class LicenseAdminWindow(QMainWindow):
         self.table.setColumnWidth(4, 90)
         self.table.setColumnWidth(5, 145)
         self.table.setColumnWidth(6, 240)
-        table_panel_layout.addWidget(self.table, 1)
+        self.table_state_panel = TableStatePanel()
+        self.table_stack = QStackedWidget()
+        self.table_stack.setObjectName("tableStack")
+        self.table_stack.addWidget(self.table)
+        self.table_stack.addWidget(self.table_state_panel)
+        table_panel_layout.addWidget(self.table_stack, 1)
         root.addWidget(self.table_panel, 1)
         main_layout.addWidget(self.content_surface, 1)
         shell.addWidget(self.main_surface, 1)
@@ -727,6 +755,7 @@ class LicenseAdminWindow(QMainWindow):
         self._theme_mode = apply_theme(mode)
         self._qsettings.setValue("ui/theme", self._theme_mode)
         self.theme_toggle.set_mode(self._theme_mode)
+        self.table_model.set_theme_mode(self._theme_mode)
 
     def _flag_icon_loaded(self, country_code: str, icon: QIcon) -> None:
         option = next(
@@ -764,6 +793,7 @@ class LicenseAdminWindow(QMainWindow):
             action.setText(text(key))
         self.window_controls.retranslate()
         self.theme_toggle.retranslate()
+        self.project_combo.retranslate()
         for button, label_key in (
             (self.about_button, "info.about"),
             (self.policy_button, "info.policy"),
@@ -780,6 +810,14 @@ class LicenseAdminWindow(QMainWindow):
         self.project_sidebar_menu.set_label(text("nav.manage_projects"))
         self._update_sidebar_toggle()
         self.search_edit.setPlaceholderText(text("dashboard.search"))
+        self.search_edit.setAccessibleName(text("accessibility.search_licenses"))
+        self.status_combo.setAccessibleName(text("accessibility.status_filter"))
+        self.table.setAccessibleName(text("accessibility.license_table"))
+        set_accessible_text(
+            self.busy_status,
+            name=text("accessibility.application_status"),
+            description=self.busy_status.text(),
+        )
         self.primary_action_button.setText(text("action.new_license"))
         self.total_card.set_texts(text("metric.total"), text("metric.total_note"))
         self.active_card.set_texts(text("status.active"), text("metric.active_note"))
@@ -799,6 +837,7 @@ class LicenseAdminWindow(QMainWindow):
         self._update_data_state_banner()
         self._refresh_visible_count()
         self._rebuild_project_menu()
+        self._refresh_table_state()
 
     def _set_sync_badge(self, state: str) -> None:
         self._sync_badge_state = state
@@ -810,6 +849,8 @@ class LicenseAdminWindow(QMainWindow):
             "revoked_pending": "sync.revoked_pending",
         }.get(state, "sync.unsynced")
         self.sync_badge.setText(text(key))
+        self.sync_badge.setAccessibleName(text("accessibility.sync_status"))
+        self.sync_badge.setAccessibleDescription(text(key))
         self.sync_badge.setProperty("synced", state == "synced")
         self.sync_badge.style().unpolish(self.sync_badge)
         self.sync_badge.style().polish(self.sync_badge)
@@ -851,13 +892,21 @@ class LicenseAdminWindow(QMainWindow):
 
     def _update_sidebar_toggle(self) -> None:
         self.sidebar_toggle.setIcon(svg_icon("sidebar-toggle", 16))
-        self.sidebar_toggle.setToolTip(
+        label = text(
+            "nav.expand_sidebar"
+            if self._sidebar_collapsed
+            else "nav.collapse_sidebar"
+        )
+        self.sidebar_toggle.setToolTip(label)
+        self.sidebar_toggle.setAccessibleName(label)
+        self.sidebar_toggle.setAccessibleDescription(
             text(
-                "nav.expand_sidebar"
+                "nav.sidebar_collapsed_state"
                 if self._sidebar_collapsed
-                else "nav.collapse_sidebar"
+                else "nav.sidebar_expanded_state"
             )
         )
+        self.sidebar_toggle.setChecked(not self._sidebar_collapsed)
         self.sidebar_toggle.setIconSize(QSize(16, 16))
 
     def _show_information_dialog(self, dialog: InformationDialog) -> None:
@@ -899,6 +948,26 @@ class LicenseAdminWindow(QMainWindow):
             self.project_combo.add_item(profile.project_name, profile.project_id)
         self.project_combo.set_current_data(self._settings.project_id)
         self._set_project_identity()
+
+    def _load_pinned_project_ids(self) -> set[str]:
+        raw = str(self._qsettings.value("projects/pinned", "[]"))
+        try:
+            values = json.loads(raw)
+        except json.JSONDecodeError:
+            return set()
+        if not isinstance(values, list):
+            return set()
+        return {value for value in values if isinstance(value, str) and value}
+
+    def _store_pinned_project_ids(self, project_ids: object) -> None:
+        if not isinstance(project_ids, tuple) or not all(
+            isinstance(value, str) for value in project_ids
+        ):
+            return
+        self._qsettings.setValue(
+            "projects/pinned",
+            json.dumps(project_ids, ensure_ascii=False),
+        )
 
     def _project_combo_changed(self, project_id: object) -> None:
         if isinstance(project_id, str):
@@ -1215,6 +1284,8 @@ class LicenseAdminWindow(QMainWindow):
 
     def _load_local(self, *, show_missing: bool) -> None:
         result = load_project_records(self._settings)
+        self._table_operation_error = None
+        self._last_operation_retry = None
         self._records = list(result.records)
         self._revocations = result.revocations
         self._advance_local_revision()
@@ -1382,6 +1453,7 @@ class LicenseAdminWindow(QMainWindow):
     def _refresh_visible_count(self) -> None:
         if not self._data_state.allows_writes:
             self.visible_label.setText(text("data.unavailable_short"))
+            self._refresh_table_state()
             return
         self.visible_label.setText(
             text(
@@ -1389,6 +1461,206 @@ class LicenseAdminWindow(QMainWindow):
                 visible=self.proxy_model.rowCount(),
                 total=len(self._records),
             )
+        )
+        self._refresh_table_state()
+
+    def _refresh_table_state(self) -> None:
+        if not hasattr(self, "table_stack"):
+            return
+        if self._table_operation_error is not None:
+            state, detail = self._table_operation_error
+            title_key = (
+                "table_state.offline_title"
+                if state == "offline"
+                else "table_state.sync_error_title"
+            )
+            body_key = (
+                "table_state.offline_body"
+                if state == "offline"
+                else "table_state.sync_error_body"
+            )
+            self._show_table_state(
+                state=state,
+                icon_name="cloud" if state == "offline" else "alert",
+                title=text(title_key),
+                body=text(body_key, error=detail),
+                primary_label=text("data.retry"),
+                primary_callback=self._retry_last_operation,
+                secondary_label=text("common.dismiss"),
+                secondary_callback=self._dismiss_operation_error,
+            )
+            return
+
+        recovery_states = {
+            ProjectDataState.CORRUPTED: (
+                "load_failed",
+                "alert",
+                "table_state.load_failed_title",
+                "table_state.load_failed_body",
+                text("data.open_backups"),
+                self._open_backup_folder,
+            ),
+            ProjectDataState.WRONG_KEY: (
+                "wrong_key",
+                "key",
+                "data.wrong_key_title",
+                "data.wrong_key_body",
+                text("action.settings"),
+                self._show_settings,
+            ),
+            ProjectDataState.PERMISSION_DENIED: (
+                "permission_denied",
+                "alert",
+                "data.permission_title",
+                "data.permission_body",
+                text("action.open_project_folder"),
+                self._open_project_folder,
+            ),
+            ProjectDataState.UNAVAILABLE: (
+                "unavailable",
+                "alert",
+                "data.unavailable_title",
+                "data.unavailable_body",
+                text("action.open_project_folder"),
+                self._open_project_folder,
+            ),
+        }
+        recovery = recovery_states.get(self._data_state)
+        if recovery is not None:
+            state, icon, title_key, body_key, secondary_label, secondary = recovery
+            self._show_table_state(
+                state=state,
+                icon_name=icon,
+                title=text(title_key),
+                body=text(body_key),
+                primary_label=text("data.retry"),
+                primary_callback=self._retry_local_data,
+                secondary_label=secondary_label,
+                secondary_callback=secondary,
+            )
+            return
+
+        if not self._records:
+            setup_complete = (
+                self._settings.signing_key_path.is_file()
+                and self._settings.public_key_path.is_file()
+            )
+            if not setup_complete:
+                self._show_table_state(
+                    state="setup",
+                    icon_name="key",
+                    title=text("table_state.setup_title"),
+                    body=text("table_state.setup_body"),
+                    primary_label=text("action.settings"),
+                    primary_callback=self._show_settings,
+                    secondary_label=text("action.import_keys"),
+                    secondary_callback=self._import_project_keys,
+                )
+            else:
+                self._show_table_state(
+                    state="empty",
+                    icon_name="table",
+                    title=text("table_state.empty_title"),
+                    body=text("table_state.empty_body"),
+                    primary_label=text("action.new_license"),
+                    primary_callback=self._add_license,
+                    secondary_label=text("action.import_signed"),
+                    secondary_callback=self._import_signed,
+                )
+            return
+
+        if self.proxy_model.rowCount() == 0:
+            self._show_table_state(
+                state="no_results",
+                icon_name="search",
+                title=text("table_state.no_results_title"),
+                body=text("table_state.no_results_body"),
+                primary_label=text("table_state.clear_filters"),
+                primary_callback=self._clear_filters,
+            )
+            return
+
+        self.table_stack.setCurrentWidget(self.table)
+
+    def _show_table_state(
+        self,
+        *,
+        state: str,
+        icon_name: str,
+        title: str,
+        body: str,
+        primary_label: str,
+        primary_callback: Callable[[], None],
+        secondary_label: str = "",
+        secondary_callback: Callable[[], None] | None = None,
+    ) -> None:
+        self.table_state_panel.set_content(
+            state=state,
+            icon_name=icon_name,
+            title=title,
+            body=body,
+            primary_label=primary_label,
+            primary_callback=primary_callback,
+            secondary_label=secondary_label,
+            secondary_callback=secondary_callback,
+        )
+        self.table_stack.setCurrentWidget(self.table_state_panel)
+
+    def _clear_filters(self) -> None:
+        self.search_edit.clear()
+        self.status_combo.set_current_data(None, emit=True)
+        self.search_edit.setFocus()
+
+    def _open_backup_folder(self) -> None:
+        repository = LicenseRepository(self._settings.local_csv_path)
+        target = (
+            repository.backup_directory
+            if repository.backup_directory.is_dir()
+            else self._project_store.project_directory(self._settings.project_id)
+        )
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+
+    def _retry_last_operation(self) -> None:
+        retry = self._last_operation_retry
+        self._dismiss_operation_error()
+        if retry is not None:
+            retry()
+
+    def _dismiss_operation_error(self) -> None:
+        self._table_operation_error = None
+        self._last_operation_retry = None
+        self._refresh_table_state()
+
+    @staticmethod
+    def _is_offline_error(error: str) -> bool:
+        lowered = error.casefold()
+        return any(
+            marker in lowered
+            for marker in (
+                "connection",
+                "network",
+                "offline",
+                "timed out",
+                "timeout",
+                "dns",
+                "name resolution",
+                "unable to download",
+            )
+        )
+
+    def _show_operation_error(
+        self,
+        error: str,
+        retry: Callable[[], None],
+    ) -> None:
+        state = "offline" if self._is_offline_error(error) else "sync_error"
+        self._table_operation_error = (state, error)
+        self._last_operation_retry = retry
+        self._refresh_table_state()
+        announce(
+            self.table_state_panel,
+            self.table_state_panel.title_label.text(),
+            assertive=True,
         )
 
     def _filter_status_changed(self, _value: object | None = None) -> None:
@@ -2225,7 +2497,12 @@ class LicenseAdminWindow(QMainWindow):
                 )
             )
 
-        self._run_operation(text("sheet.pulling"), operation, complete)
+        self._run_operation(
+            text("sheet.pulling"),
+            operation,
+            complete,
+            retry=self._pull_sheet,
+        )
 
     def _apply_pull_preview(
         self,
@@ -2336,7 +2613,12 @@ class LicenseAdminWindow(QMainWindow):
                     expected_content_digest=remote_content_digest,
                 )
 
-        self._run_operation(text("sheet.pulling"), operation, complete)
+        self._run_operation(
+            text("sheet.pulling"),
+            operation,
+            complete,
+            retry=self._pull_sheet,
+        )
 
     def _push_sheet(self) -> None:
         if self._busy or not self._ensure_data_writable():
@@ -2418,7 +2700,12 @@ class LicenseAdminWindow(QMainWindow):
                 )
             )
 
-        self._run_operation(text("sheet.checking"), operation, complete)
+        self._run_operation(
+            text("sheet.checking"),
+            operation,
+            complete,
+            retry=self._push_sheet,
+        )
 
     def _publish_push_preview(
         self,
@@ -2497,7 +2784,12 @@ class LicenseAdminWindow(QMainWindow):
                 self._set_pending_sync_badge()
                 self._notify(text("sheet.local_changed"), tone="info")
 
-        self._run_operation(text("sheet.syncing"), operation, complete)
+        self._run_operation(
+            text("sheet.syncing"),
+            operation,
+            complete,
+            retry=self._push_sheet,
+        )
 
     def _format_sheet(self) -> None:
         if self._busy or not self._ensure_data_writable():
@@ -2511,6 +2803,7 @@ class LicenseAdminWindow(QMainWindow):
             text("sheet.formatting"),
             lambda: client.format_worksheet(),
             lambda _result: self._notify(text("sheet.formatted")),
+            retry=self._format_sheet,
         )
 
     def _test_connection(self) -> None:
@@ -2523,7 +2816,12 @@ class LicenseAdminWindow(QMainWindow):
         def complete(records: Any) -> None:
             self._notify(text("message.connection_ok", count=len(records)))
 
-        self._run_operation(text("sheet.checking"), client.read_records, complete)
+        self._run_operation(
+            text("sheet.checking"),
+            client.read_records,
+            complete,
+            retry=self._test_connection,
+        )
 
     def _open_sheet(self) -> None:
         try:
@@ -2566,6 +2864,8 @@ class LicenseAdminWindow(QMainWindow):
         message: str,
         operation: Callable[[], Any],
         on_success: Callable[[Any], None],
+        *,
+        retry: Callable[[], None],
     ) -> None:
         if self._busy:
             return
@@ -2578,9 +2878,15 @@ class LicenseAdminWindow(QMainWindow):
                 on_success(result)
             except Exception as exc:
                 QMessageBox.critical(self, text("operation.complete_failed"), str(exc))
+                self._show_operation_error(str(exc), retry)
+            else:
+                self._table_operation_error = None
+                self._last_operation_retry = None
+                self._refresh_table_state()
 
         def failed(error: str) -> None:
             QMessageBox.critical(self, text("message.operation_failed"), error)
+            self._show_operation_error(error, retry)
 
         def finished() -> None:
             self._workers.discard(worker)
@@ -2604,8 +2910,12 @@ class LicenseAdminWindow(QMainWindow):
             raise RuntimeError("A follow-up operation is already queued.")
         self._operation_continuation = continuation
 
-    def _set_busy(self, busy: bool, _message: str) -> None:
+    def _set_busy(self, busy: bool, message: str) -> None:
         self._busy = busy
+        self.busy_status.setText(message)
+        self.busy_status.setAccessibleDescription(message)
+        self.busy_status.setVisible(busy)
+        announce(self.busy_status if busy else self, message)
         self._update_action_states()
         self.table.setEnabled(not busy)
         if busy:
@@ -2651,6 +2961,9 @@ class LicenseAdminWindow(QMainWindow):
             self.project_sidebar_menu.setEnabled(idle)
             self.data_state_banner.retry_button.setEnabled(idle)
             self.data_state_banner.open_folder_button.setEnabled(idle)
+        if hasattr(self, "table_state_panel"):
+            self.table_state_panel.primary_button.setEnabled(idle)
+            self.table_state_panel.secondary_button.setEnabled(idle)
 
     def _refresh_sync_badge_from_baseline(self) -> None:
         if any(

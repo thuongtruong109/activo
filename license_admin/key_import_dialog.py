@@ -135,6 +135,8 @@ class KeyImportDialog(QDialog):
         edit = QLineEdit()
         button = QPushButton(text("common.choose"))
         button.setIcon(svg_icon("folder", 16))
+        button.setAccessibleName(f"{text('common.choose')} {label}")
+        button.setToolTip(label)
 
         def browse() -> None:
             selected, _ = QFileDialog.getOpenFileName(

@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
 )
 
 from license_admin.icons import icon_pixmap
+from license_admin.accessibility import announce, set_accessible_text
+from license_admin.localization import text
 
 
 class Toast(QFrame):
@@ -21,6 +23,7 @@ class Toast(QFrame):
         super().__init__(parent)
         self.setObjectName("toast")
         self.setProperty("tone", "success")
+        set_accessible_text(self, name=text("accessibility.notification"))
         self.setMinimumWidth(320)
         self.setMaximumWidth(460)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -66,6 +69,11 @@ class Toast(QFrame):
             icon_pixmap("toast-success" if tone == "success" else "toast-info", 18)
         )
         self._message.setText(message)
+        set_accessible_text(
+            self,
+            name=text("accessibility.notification"),
+            description=message,
+        )
         self.style().unpolish(self)
         self.style().polish(self)
         self.adjustSize()
@@ -73,6 +81,7 @@ class Toast(QFrame):
         self._opacity.setOpacity(0.0)
         self.show()
         self.raise_()
+        announce(self, message)
         self._animation.setStartValue(0.0)
         self._animation.setEndValue(1.0)
         self._animation.start()

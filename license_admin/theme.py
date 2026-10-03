@@ -1,5 +1,6 @@
 """Dark and light application themes shared by windows and dialogs."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
@@ -30,20 +31,24 @@ QFrame#sidebarHeader {
 }
 QFrame#windowControls { background: transparent; border: 0; }
 QPushButton#trafficClose, QPushButton#trafficMinimize, QPushButton#trafficMaximize {
+    background: transparent;
+    color: #9db0c1;
     border: 0;
-    border-radius: 6px;
+    border-radius: 5px;
     padding: 0;
-    min-width: 12px;
-    max-width: 12px;
-    min-height: 12px;
-    max-height: 12px;
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    font-family: "Segoe UI Symbol";
+    font-size: 15px;
+    font-weight: 600;
 }
-QPushButton#trafficClose { background: #ff5f57; }
-QPushButton#trafficMinimize { background: #febc2e; }
-QPushButton#trafficMaximize { background: #28c840; }
-QPushButton#trafficClose:hover { background: #ff756e; }
-QPushButton#trafficMinimize:hover { background: #ffca4b; }
-QPushButton#trafficMaximize:hover { background: #45d45a; }
+QPushButton#trafficClose:hover { background: #c42b36; color: #ffffff; }
+QPushButton#trafficMinimize:hover, QPushButton#trafficMaximize:hover {
+    background: #173043;
+    color: #ffffff;
+}
 QWidget#headerBrand { background: transparent; }
 QLabel#brandName { color: #f6f9fc; font-size: 11px; font-weight: 750; }
 QToolButton#sidebarToggle {
@@ -112,8 +117,7 @@ QLabel#projectSelectorAvatar {
     border-radius: 12px;
     font-weight: 800;
 }
-QLabel#projectSelectorName { color: #f2f7fb; font-size: 10px; font-weight: 700; }
-QLabel#projectSelectorId { color: #637386; font-size: 8px; }
+QLabel#projectSelectorName { color: #f2f7fb; font-size: 12px; font-weight: 700; }
 QFrame#topBar {
     background: #08121c;
     border-bottom: 1px solid #1a2937;
@@ -139,10 +143,10 @@ QFrame#metricCard, QFrame#tablePanel {
     border-radius: 11px;
 }
 QFrame#metricCard:hover { border-color: #284154; background: #101d2a; }
-QLabel#metricTitle { color: #7f8c9b; font-size: 11px; }
+QLabel#metricTitle { color: #8fa3b5; font-size: 11px; }
 QLabel#metricValue { color: #f4f8fc; font-size: 23px; font-weight: 750; }
-QLabel#metricNote { color: #536476; font-size: 9px; }
-QLabel#muted { color: #7f8b99; }
+QLabel#metricNote { color: #8fa3b5; font-size: 11px; }
+QLabel#muted { color: #8fa3b5; }
 QLabel#warning { color: #f8bf48; }
 QLabel#danger { color: #f87171; }
 QLabel#syncBadge {
@@ -151,7 +155,7 @@ QLabel#syncBadge {
     border: 1px solid #5f4820;
     border-radius: 10px;
     padding: 3px 9px;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
 }
 QLabel#syncBadge[synced="true"] {
@@ -219,7 +223,6 @@ QCalendarWidget QAbstractItemView:enabled {
     selection-background-color: #0f789e;
     selection-color: #ffffff;
     border: 0;
-    outline: 0;
 }
 QCalendarWidget QAbstractItemView:disabled { color: #4c5b69; }
 QLineEdit#dashboardSearch { padding-left: 11px; }
@@ -332,7 +335,6 @@ QTableView {
     gridline-color: #1a2936;
     selection-background-color: #153c54;
     selection-color: #ffffff;
-    outline: 0;
 }
 QTableView::item { padding: 6px 7px; border-bottom: 1px solid #162532; }
 QTableView::item:hover { background: #122535; }
@@ -342,7 +344,7 @@ QHeaderView::section {
     border: 0;
     border-bottom: 1px solid #233443;
     padding: 8px 7px;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
 }
 QHeaderView::section:vertical {
@@ -386,6 +388,15 @@ QFrame#toast { background: #0c3025; border: 1px solid #1a6a4c; border-radius: 9p
 QFrame#toast[tone="info"] { background: #0c2638; border-color: #176386; }
 QFrame#toast QLabel { background: transparent; }
 QLabel#toastMessage { color: #f1f7fa; }
+QLabel#busyStatus { color: #9fb1c0; font-size: 11px; }
+QFrame#tableStatePanel { background: #0b1520; border: 0; }
+QLabel#tableStateIcon {
+    background: #102a3a;
+    border: 1px solid #22506a;
+    border-radius: 22px;
+}
+QLabel#tableStateTitle { color: #f2f8fc; font-size: 17px; font-weight: 750; }
+QLabel#tableStateBody { color: #9fb1c0; font-size: 12px; }
 QTabWidget::pane { border: 1px solid #263746; border-radius: 7px; top: -1px; }
 QTabBar::tab {
     background: #0b1621;
@@ -422,7 +433,7 @@ QLabel#informationIconBadge {
 QLabel#informationTitle { color: #f4f8fc; font-size: 17px; font-weight: 750; }
 QLabel#informationEyebrow {
     color: #6f8293;
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 700;
 }
 QToolButton#informationCloseButton {
@@ -459,7 +470,7 @@ QLabel#informationContactIcon {
     border: 0;
     border-radius: 7px;
 }
-QLabel#informationContactLink { color: #8297a7; font-size: 11px; }
+QLabel#informationContactLink { color: #74d7ff; font-size: 11px; }
 QFrame#informationFooter {
     background: #0d1b27;
     border: 0;
@@ -560,7 +571,7 @@ QToolButton[popover="true"] {{
 }}
 """
 
-DARK_STYLESHEET = ADMIN_STYLESHEET
+BASE_STYLESHEET = ADMIN_STYLESHEET
 LIGHT_OVERRIDES = """
 QWidget { color: #243244; }
 QDialog,
@@ -599,7 +610,6 @@ QLabel#projectSelectorAvatar {
     border-color: #b7deeb;
 }
 QLabel#projectSelectorName { color: #1e2b3b; }
-QLabel#projectSelectorId { color: #77869a; }
 QFrame#topBar {
     background: #f7f9fc;
     border-color: #d4dce6;
@@ -622,9 +632,9 @@ QFrame#metricCard, QFrame#tablePanel {
     border-color: #d8e0e9;
 }
 QFrame#metricCard:hover { background: #fbfcfe; border-color: #becbd8; }
-QLabel#metricTitle, QLabel#muted { color: #718096; }
+QLabel#metricTitle, QLabel#muted { color: #4b5d73; }
 QLabel#metricValue { color: #1e293b; }
-QLabel#metricNote { color: #8794a6; }
+QLabel#metricNote { color: #4b5d73; }
 QLabel#warning { color: #966600; }
 QLabel#danger { color: #c93d4f; }
 QLabel#syncBadge {
@@ -733,7 +743,7 @@ QLabel#informationSectionBody { color: #65758a; }
 QFrame#informationDivider { background: #e2e7ed; }
 QFrame#informationContact { background: #e9f8fc; border-color: #b9dfeb; }
 QLabel#informationContactIcon { background: #d4eef6; }
-QLabel#informationContactLink { color: #536477; }
+QLabel#informationContactLink { color: #075985; }
 QPushButton#informationCloseAction {
     background: #ffffff;
     color: #35475a;
@@ -757,12 +767,113 @@ QPushButton#themeLightTab[active="true"], QPushButton#themeDarkTab[active="true"
     color: #263648;
 }
 QToolTip { background: #ffffff; color: #263648; border-color: #b9c5d1; }
+QLabel#busyStatus { color: #4b5d73; }
+QFrame#tableStatePanel { background: #ffffff; }
+QLabel#tableStateIcon { background: #e7f5fa; border-color: #b8dfea; }
+QLabel#tableStateTitle { color: #1f2d3d; }
+QLabel#tableStateBody { color: #4b5d73; }
+QPushButton#trafficClose, QPushButton#trafficMinimize, QPushButton#trafficMaximize {
+    color: #526477;
+}
+QPushButton#trafficMinimize:hover, QPushButton#trafficMaximize:hover {
+    background: #dde6ef;
+    color: #172435;
+}
 """
 LIGHT_OVERRIDES += f"""
 QMenu#roundedPopover::indicator:checked {{
     image: url("{_MENU_CHECK_LIGHT_URL}");
 }}
 """
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticPalette:
+    """Theme tokens whose contrast must not depend on inherited widget colors."""
+
+    surface: str
+    focus_ring: str
+    text_muted: str
+    text_subtle: str
+    link: str
+    icon: str
+    status_active: str
+    status_expiring: str
+    status_expired: str
+    status_future: str
+    status_invalid: str
+
+
+DARK_PALETTE = SemanticPalette(
+    surface="#07111b",
+    focus_ring="#ffd166",
+    text_muted="#a6b4c2",
+    text_subtle="#8fa3b5",
+    link="#74d7ff",
+    icon="#9db0c1",
+    status_active="#22c55e",
+    status_expiring="#f5b82e",
+    status_expired="#f05d6c",
+    status_future="#60a5fa",
+    status_invalid="#f87171",
+)
+LIGHT_PALETTE = SemanticPalette(
+    surface="#ffffff",
+    focus_ring="#005fcc",
+    text_muted="#4b5d73",
+    text_subtle="#526477",
+    link="#075985",
+    icon="#65788a",
+    status_active="#147552",
+    status_expiring="#805b00",
+    status_expired="#b42332",
+    status_future="#075985",
+    status_invalid="#b42332",
+)
+
+
+def _semantic_overrides(palette: SemanticPalette) -> str:
+    """Render focus and readable metadata after all component overrides."""
+    return f"""
+QLabel#metricTitle, QLabel#metricNote, QLabel#muted,
+QLabel#busyStatus, QLabel#tableStateBody {{ color: {palette.text_muted}; }}
+QLabel#informationEyebrow, QLabel#informationSectionBody,
+QHeaderView::section {{ color: {palette.text_subtle}; }}
+QTabBar::tab:!selected,
+QPushButton#themeLightTab[active="false"],
+QPushButton#themeDarkTab[active="false"] {{ color: {palette.text_subtle}; }}
+QLabel#projectSelectorAvatar, QLabel#informationSectionIndex,
+QLabel#informationContactLink {{ color: {palette.link}; }}
+
+QPushButton:focus, QToolButton:focus,
+QPushButton#primaryButton:focus,
+QToolButton#sidebarToggle:focus, QToolButton#headerInfoButton:focus,
+QPushButton#sidebarButton:focus, QToolButton#sidebarButton:focus,
+QToolButton#projectSelector:focus,
+QPushButton#themeLightTab:focus, QPushButton#themeDarkTab:focus,
+QPushButton#trafficClose:focus, QPushButton#trafficMinimize:focus,
+QPushButton#trafficMaximize:focus, QToolButton#modalCloseButton:focus,
+QToolButton#informationCloseButton:focus {{
+    border: 2px solid {palette.focus_ring};
+}}
+QLineEdit:focus, QComboBox:focus, QDateEdit:focus,
+QTextEdit:focus, QSpinBox:focus, QTabBar:focus {{
+    border: 2px solid {palette.focus_ring};
+}}
+QTableView:focus, QCalendarWidget QAbstractItemView:focus {{
+    border: 2px solid {palette.focus_ring};
+}}
+"""
+
+
+DARK_STYLESHEET = BASE_STYLESHEET + _semantic_overrides(DARK_PALETTE)
+LIGHT_STYLESHEET = (
+    BASE_STYLESHEET
+    + LIGHT_OVERRIDES
+    + _semantic_overrides(LIGHT_PALETTE)
+)
+# Compatibility name used by the application entry point and existing callers.
+ADMIN_STYLESHEET = DARK_STYLESHEET
 
 THEME_MODES = frozenset(("light", "dark"))
 DEFAULT_THEME = "dark"
@@ -773,9 +884,24 @@ def normalize_theme(mode: str) -> str:
     return normalized if normalized in THEME_MODES else DEFAULT_THEME
 
 
+def semantic_palette_for(mode: str) -> SemanticPalette:
+    return LIGHT_PALETTE if normalize_theme(mode) == "light" else DARK_PALETTE
+
+
+def status_text_color(mode: str, status: str) -> str:
+    palette = semantic_palette_for(mode)
+    return {
+        "active": palette.status_active,
+        "expiring": palette.status_expiring,
+        "expired": palette.status_expired,
+        "future": palette.status_future,
+        "invalid": palette.status_invalid,
+    }.get(status, palette.text_muted)
+
+
 def stylesheet_for(mode: str) -> str:
     if normalize_theme(mode) == "light":
-        return DARK_STYLESHEET + LIGHT_OVERRIDES
+        return LIGHT_STYLESHEET
     return DARK_STYLESHEET
 
 

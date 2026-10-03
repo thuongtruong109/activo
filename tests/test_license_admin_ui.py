@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import replace
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from PySide6.QtCore import QPoint, QSettings, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -63,6 +65,7 @@ from license_admin.localization import DEFAULT_LANGUAGE, LANGUAGES, set_language
 from license_admin.modal_backdrop import ModalBackdrop
 from license_admin.popover import RoundedMenu
 from license_admin.project_lock import ProjectLease
+from license_admin.project_selector import ProjectSelector
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.record_transaction import RecordTransaction
 from license_admin.revocations import (
@@ -76,7 +79,12 @@ from license_admin.service_account_store import import_service_account
 from license_admin.settings import ProjectStore
 from license_admin.storage import LicenseRepository
 from license_admin.sync_models import build_sync_diff
-from license_admin.theme import ADMIN_STYLESHEET, stylesheet_for
+from license_admin.theme import (
+    ADMIN_STYLESHEET,
+    DARK_PALETTE,
+    LIGHT_PALETTE,
+    stylesheet_for,
+)
 from license_admin.ui_metrics import CONTROL_HEIGHT
 from license_admin.window_chrome import DraggableFrame
 from workspace_temp import workspace_temp_dir
@@ -214,7 +222,7 @@ class LicenseAdminUiTests(unittest.TestCase):
             window.show()
             self.app.processEvents()
             self.assertEqual(window.findChildren(QToolBar), [])
-            self.assertFalse(window.table.verticalHeader().isHidden())
+            self.assertTrue(window.table.verticalHeader().isHidden())
             self.assertTrue(window.statusBar().isHidden())
             self.assertTrue(window.menuBar().isHidden())
             self.assertTrue(
@@ -245,6 +253,14 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertEqual(
                 window.window_controls.maximize_button.objectName(),
                 "trafficMaximize",
+            )
+            self.assertEqual(
+                {
+                    window.window_controls.minimize_button.width(),
+                    window.window_controls.maximize_button.width(),
+                    window.window_controls.close_button.width(),
+                },
+                {32},
             )
             self.assertLess(
                 window.window_controls.minimize_button.geometry().left(),
@@ -994,7 +1010,10 @@ class LicenseAdminUiTests(unittest.TestCase):
                 _message: str,
                 _operation: object,
                 on_success: object,
+                *,
+                retry: object,
             ) -> None:
+                self.assertEqual(retry, window._push_sheet)
                 window._advance_local_revision()
                 on_success(remote)  # type: ignore[operator]
 
@@ -1054,6 +1073,10 @@ class LicenseAdminUiTests(unittest.TestCase):
                 patch.object(window, "_mark_synced") as mark_synced,
             ):
                 window._push_sheet()
+                self.assertEqual(
+                    run_operation.call_args.kwargs["retry"],
+                    window._push_sheet,
+                )
                 preview_complete = run_operation.call_args.args[2]
                 preview_complete(remote)
 
@@ -1248,6 +1271,344 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertFalse(window.theme_toggle.dark_button.isChecked())
         finally:
             window.theme_toggle.set_mode("dark", emit=True)
+            window.close()
+
+    def test_semantic_palettes_meet_contrast_thresholds(self) -> None:
+        def luminance(color: str) -> float:
+            channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+            linear = [
+                value / 12.92
+                if value <= 0.04045
+                else ((value + 0.055) / 1.055) ** 2.4
+                for value in channels
+            ]
+            return sum(
+                weight * value
+                for weight, value in zip((0.2126, 0.7152, 0.0722), linear, strict=True)
+            )
+
+        def contrast(first: str, second: str) -> float:
+            bright, dark = sorted(
+                (luminance(first), luminance(second)),
+                reverse=True,
+            )
+            return (bright + 0.05) / (dark + 0.05)
+
+        for palette in (DARK_PALETTE, LIGHT_PALETTE):
+            for color in (
+                palette.text_muted,
+                palette.text_subtle,
+                palette.link,
+                palette.status_active,
+                palette.status_expiring,
+                palette.status_expired,
+                palette.status_future,
+                palette.status_invalid,
+            ):
+                self.assertGreaterEqual(contrast(color, palette.surface), 4.5)
+            self.assertGreaterEqual(
+                contrast(palette.focus_ring, palette.surface),
+                3.0,
+            )
+        icon_color = "#65788a"
+        self.assertGreaterEqual(contrast(icon_color, "#ffffff"), 3.0)
+        self.assertGreaterEqual(contrast(icon_color, "#07111b"), 3.0)
+        for foreground, background in (
+            ("#526477", "#edf1f5"),
+            ("#075985", "#e4f6fc"),
+        ):
+            self.assertGreaterEqual(contrast(foreground, background), 4.5)
+
+    def test_table_status_colors_follow_the_active_semantic_palette(self) -> None:
+        model = LicenseTableModel("light")
+        model.set_records([LicenseRecord(hwid="abc", token="invalid")])
+        status_index = model.index(0, 2)
+        light_color = model.data(status_index, Qt.ItemDataRole.ForegroundRole)
+        self.assertEqual(light_color.name(), LIGHT_PALETTE.status_invalid)
+
+        model.set_theme_mode("dark")
+        dark_color = model.data(status_index, Qt.ItemDataRole.ForegroundRole)
+        self.assertEqual(dark_color.name(), DARK_PALETTE.status_invalid)
+
+    def test_keyboard_focus_changes_render_for_primary_controls(self) -> None:
+        original_stylesheet = self.app.styleSheet()
+        window = self.create_window()
+        try:
+            window.resize(1200, 760)
+            window.show()
+            window.table_stack.setCurrentWidget(window.table)
+            self.app.processEvents()
+
+            controls = (
+                window.primary_action_button,
+                window.overview_button,
+                window.project_combo,
+                window.about_button,
+                window.theme_toggle.light_button,
+                window.table,
+                window.window_controls.close_button,
+            )
+            for mode in ("dark", "light"):
+                self.app.setStyleSheet(stylesheet_for(mode))
+                self.app.processEvents()
+                for control in controls:
+                    self.assertTrue(
+                        control.focusPolicy() & Qt.FocusPolicy.TabFocus,
+                        f"Not keyboard reachable: {control.objectName()}",
+                    )
+                    window.search_edit.setFocus()
+                    self.app.processEvents()
+                    unfocused = control.grab().toImage()
+                    control.setFocus(Qt.FocusReason.TabFocusReason)
+                    self.app.processEvents()
+                    focused = control.grab().toImage()
+                    unfocused_digest = hashlib.sha256(bytes(unfocused.bits())).digest()
+                    focused_digest = hashlib.sha256(bytes(focused.bits())).digest()
+                    self.assertNotEqual(
+                        unfocused_digest,
+                        focused_digest,
+                        f"{mode}: {control.objectName() or type(control).__name__}",
+                    )
+        finally:
+            window.close()
+            self.app.setStyleSheet(original_stylesheet)
+
+    def test_accessible_names_survive_collapsed_and_icon_only_states(self) -> None:
+        window = self.create_window()
+        try:
+            self.assertTrue(window.project_combo.accessibleName())
+            self.assertEqual(window.search_edit.accessibleName(), "Search licenses")
+            self.assertEqual(window.table.accessibleName(), "License table")
+            self.assertEqual(
+                window.sidebar_toggle.accessibleName(),
+                "Collapse sidebar",
+            )
+            for button, name in (
+                (window.window_controls.minimize_button, "Minimize"),
+                (window.window_controls.maximize_button, "Maximize"),
+                (window.window_controls.close_button, "Close"),
+            ):
+                self.assertEqual(button.accessibleName(), name)
+                self.assertEqual(button.toolTip(), name)
+                self.assertEqual(button.size().width(), 32)
+
+            window._set_sidebar_collapsed(True)
+            self.assertEqual(window.overview_button.text(), "")
+            self.assertEqual(window.overview_button.accessibleName(), "Overview")
+            self.assertEqual(
+                window.project_sidebar_menu.accessibleName(),
+                "Manage projects",
+            )
+            self.assertEqual(window.sidebar_toggle.accessibleName(), "Expand sidebar")
+            self.assertEqual(
+                window.sidebar_toggle.accessibleDescription(),
+                "Sidebar is collapsed",
+            )
+
+            window.showMaximized()
+            self.app.processEvents()
+            self.assertEqual(
+                window.window_controls.maximize_button.accessibleName(),
+                "Restore",
+            )
+            self.assertEqual(window.window_controls.maximize_button.text(), "❐")
+            window.window_controls.maximize_button.setFocus()
+            QTest.keyClick(
+                window.window_controls.maximize_button,
+                Qt.Key.Key_Space,
+            )
+            self.app.processEvents()
+            self.assertFalse(window.isMaximized())
+            self.assertEqual(
+                window.window_controls.maximize_button.accessibleName(),
+                "Maximize",
+            )
+
+            window.toast.show_message("Accessible notification", duration_ms=10)
+            self.assertEqual(window.toast.accessibleName(), "Notification")
+            self.assertEqual(
+                window.toast.accessibleDescription(),
+                "Accessible notification",
+            )
+            window._set_busy(True, "Syncing")
+            self.assertFalse(window.busy_status.isHidden())
+            self.assertEqual(window.busy_status.accessibleDescription(), "Syncing")
+            window._set_busy(False, "Ready")
+        finally:
+            window.close()
+
+    def test_settings_browse_buttons_have_contextual_accessible_names(self) -> None:
+        window = self.create_window()
+        project_directory = self.project_store.project_directory(
+            window._settings.project_id
+        )
+        dialogs = (
+            SettingsDialog(
+                window,
+                window._settings,
+                project_directory=project_directory,
+                record_count=0,
+            ),
+            KeyImportDialog(
+                window,
+                project_name=window._settings.project_name,
+                project_directory=project_directory,
+                record_count=0,
+            ),
+            ServiceAccountImportDialog(
+                window,
+                project_name=window._settings.project_name,
+                project_directory=project_directory,
+            ),
+        )
+        try:
+            for dialog in dialogs:
+                browse_buttons = [
+                    button
+                    for button in dialog.findChildren(QPushButton)
+                    if button.text() == "Choose…"
+                ]
+                self.assertTrue(browse_buttons, type(dialog).__name__)
+                self.assertTrue(
+                    all(button.accessibleName() for button in browse_buttons),
+                    type(dialog).__name__,
+                )
+                self.assertTrue(
+                    all(button.toolTip() for button in browse_buttons),
+                    type(dialog).__name__,
+                )
+        finally:
+            for dialog in dialogs:
+                dialog.close()
+            window.close()
+
+    def test_table_states_distinguish_setup_empty_search_and_failures(self) -> None:
+        window = self.create_window()
+        try:
+            window._data_state = ProjectDataState.EMPTY
+            window._records = []
+            window._refresh_view()
+            self.assertIs(window.table_stack.currentWidget(), window.table_state_panel)
+            self.assertEqual(window.table_state_panel.property("state"), "empty")
+            self.assertEqual(window.table_state_panel.primary_button.text(), "Create license")
+            self.assertEqual(
+                window.table_state_panel.secondary_button.text(),
+                "Import signed CSV…",
+            )
+
+            window._settings = replace(
+                window._settings,
+                signing_key_path=Path("missing-private.key"),
+                public_key_path=Path("missing-public.pem"),
+            )
+            window._refresh_table_state()
+            self.assertEqual(window.table_state_panel.property("state"), "setup")
+            self.assertEqual(window.table_state_panel.primary_button.text(), "Settings")
+            self.assertEqual(
+                window.table_state_panel.secondary_button.text(),
+                "Import key pair…",
+            )
+
+            window._data_state = ProjectDataState.READY
+            window._records = [
+                LicenseRecord(hwid="a" * 64, token="invalid", username="Visible")
+            ]
+            window._refresh_view()
+            window.search_edit.setText("no-match")
+            self.assertEqual(window.table_state_panel.property("state"), "no_results")
+            self.assertEqual(window.table_state_panel.primary_button.text(), "Clear filters")
+
+            window._data_state = ProjectDataState.PERMISSION_DENIED
+            window._refresh_table_state()
+            self.assertEqual(
+                window.table_state_panel.property("state"),
+                "permission_denied",
+            )
+
+            for data_state, expected in (
+                (ProjectDataState.CORRUPTED, "load_failed"),
+                (ProjectDataState.WRONG_KEY, "wrong_key"),
+                (ProjectDataState.UNAVAILABLE, "unavailable"),
+            ):
+                window._data_state = data_state
+                window._refresh_table_state()
+                self.assertEqual(window.table_state_panel.property("state"), expected)
+
+            window._data_state = ProjectDataState.READY
+            window._show_operation_error("connection timed out", lambda: None)
+            self.assertEqual(window.table_state_panel.property("state"), "offline")
+            self.assertEqual(window.table_state_panel.primary_button.text(), "Retry")
+            self.assertEqual(window.table_state_panel.secondary_button.text(), "Dismiss")
+            window._show_operation_error("remote revision conflict", lambda: None)
+            self.assertEqual(window.table_state_panel.property("state"), "sync_error")
+        finally:
+            window.close()
+
+    def test_project_selector_supports_search_recent_and_pins(self) -> None:
+        selector = ProjectSelector()
+        try:
+            for index in range(6):
+                selector.add_item(f"Project {index}", f"project-{index}")
+            selector.set_current_data("project-5")
+            selector._prepare_menu()
+
+            self.assertIn(selector._search_action, selector.menu().actions())
+            selector._pin_action.trigger()
+            self.assertEqual(selector.pinned_ids(), {"project-5"})
+            selector._prepare_menu()
+            section_labels = [
+                action.text()
+                for action in selector.menu().actions()
+                if action.isSeparator() and action.text()
+            ]
+            self.assertIn("Pinned", section_labels)
+            self.assertIn("Recent", section_labels)
+
+            selector._search_edit.setText("project-2")
+            visible_projects = [
+                action.data()
+                for action in selector.actions()
+                if action.isVisible()
+            ]
+            self.assertEqual(visible_projects, ["project-2"])
+        finally:
+            selector.close()
+
+    def test_project_selector_elides_long_names_and_preserves_full_tooltip(self) -> None:
+        selector = ProjectSelector()
+        full_name = "A project name that is intentionally much too long for the header"
+        try:
+            selector.add_item(full_name, "long-project-id")
+            selector.resize(160, CONTROL_HEIGHT)
+            selector.show()
+            self.app.processEvents()
+
+            self.assertNotEqual(selector.name_label.text(), full_name)
+            self.assertIn(full_name, selector.toolTip())
+            self.assertIn("long-project-id", selector.toolTip())
+        finally:
+            selector.close()
+
+    def test_rebuilding_project_menu_refreshes_window_identity(self) -> None:
+        window = self.create_window()
+        try:
+            window._settings = replace(window._settings, project_name="Renamed project")
+            window._rebuild_project_menu()
+            self.assertEqual(window.windowTitle(), "Renamed project — License Admin")
+        finally:
+            window.close()
+
+    def test_busy_state_disables_contextual_table_actions(self) -> None:
+        window = self.create_window()
+        try:
+            window._refresh_table_state()
+            self.assertTrue(window.table_state_panel.primary_button.isEnabled())
+            window._set_busy(True, "Syncing")
+            self.assertFalse(window.table_state_panel.primary_button.isEnabled())
+            self.assertFalse(window.table_state_panel.secondary_button.isEnabled())
+            window._set_busy(False, "Ready")
+            self.assertTrue(window.table_state_panel.primary_button.isEnabled())
+        finally:
             window.close()
 
     def test_editor_quick_select_aligns_with_form_fields(self) -> None:
@@ -1449,7 +1810,12 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertEqual(window._settings.project_id, "second-app")
             self.assertEqual(window.windowTitle(), "Second App — License Admin")
             self.assertEqual(window.project_combo.name_label.text(), "Second App")
-            self.assertEqual(window.project_combo.id_label.text(), "second-app")
+            self.assertNotIn("\n", window.project_combo.name_label.text())
+            self.assertIn("second-app", window.project_combo.toolTip())
+            self.assertIn(
+                "second-app",
+                window.project_combo.accessibleDescription(),
+            )
             self.assertEqual(window.project_combo.avatar_label.text(), "S")
             self.assertEqual(window.project_combo.currentData(), "second-app")
             active_actions = [

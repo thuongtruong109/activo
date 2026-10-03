@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor
 
 from license_admin.domain import LicenseRecord, LicenseStatus
 from license_admin.localization import text
+from license_admin.theme import normalize_theme, status_text_color
 
 
 STATUS_LABEL_KEYS = {
@@ -26,15 +27,6 @@ STATUS_LABEL_KEYS = {
     LicenseStatus.FUTURE: "status.future",
     LicenseStatus.INVALID: "status.invalid",
 }
-
-STATUS_COLORS = {
-    LicenseStatus.ACTIVE: QColor("#22c55e"),
-    LicenseStatus.EXPIRING: QColor("#f59e0b"),
-    LicenseStatus.EXPIRED: QColor("#ef4444"),
-    LicenseStatus.FUTURE: QColor("#60a5fa"),
-    LicenseStatus.INVALID: QColor("#f87171"),
-}
-
 
 def normalize_search_text(value: str) -> str:
     """Normalize case and Vietnamese diacritics for contains-style search."""
@@ -58,9 +50,10 @@ class LicenseTableModel(QAbstractTableModel):
         "JTI",
     )
 
-    def __init__(self) -> None:
+    def __init__(self, theme_mode: str = "dark") -> None:
         super().__init__()
         self._records: list[LicenseRecord] = []
+        self._theme_mode = normalize_theme(theme_mode)
 
     @property
     def records(self) -> list[LicenseRecord]:
@@ -140,7 +133,7 @@ class LicenseTableModel(QAbstractTableModel):
             )
             return sort_values[index.column()]
         if role == Qt.ItemDataRole.ForegroundRole and index.column() == 2:
-            return STATUS_COLORS[status]
+            return QColor(status_text_color(self._theme_mode, status.value))
         if role == Qt.ItemDataRole.ToolTipRole:
             if record.parse_error:
                 return record.parse_error
@@ -172,6 +165,18 @@ class LicenseTableModel(QAbstractTableModel):
                 self.index(0, 0),
                 self.index(len(self._records) - 1, 6),
                 [int(Qt.ItemDataRole.DisplayRole)],
+            )
+
+    def set_theme_mode(self, mode: str) -> None:
+        normalized = normalize_theme(mode)
+        if normalized == self._theme_mode:
+            return
+        self._theme_mode = normalized
+        if self._records:
+            self.dataChanged.emit(
+                self.index(0, 2),
+                self.index(len(self._records) - 1, 2),
+                [int(Qt.ItemDataRole.ForegroundRole)],
             )
 
 
