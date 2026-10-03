@@ -10,7 +10,13 @@ import shutil
 from uuid import uuid4
 
 from issue_license import LicenseIssueError
-from license_admin.key_store import ImportedKeyPair, public_key_fingerprint
+from license_admin.key_store import (
+    PRIVATE_KEY_FILENAME,
+    PUBLIC_KEY_FILENAME,
+    ImportedKeyPair,
+    public_key_fingerprint,
+)
+from license_admin.windows_security import restrict_to_current_user
 from license_admin.service_account_store import (
     ImportedServiceAccount,
     inspect_service_account,
@@ -52,11 +58,11 @@ class SettingsTransaction:
 
     @property
     def private_key_path(self) -> Path:
-        return self.asset_directory / "private.pem"
+        return self.asset_directory / PRIVATE_KEY_FILENAME
 
     @property
     def public_key_path(self) -> Path:
-        return self.asset_directory / "public.pem"
+        return self.asset_directory / PUBLIC_KEY_FILENAME
 
     @property
     def service_account_path(self) -> Path:
@@ -148,12 +154,14 @@ class SettingsTransaction:
             if use_keys or use_credentials:
                 assets_root = self.asset_directory.parent
                 assets_root.mkdir(parents=True, exist_ok=True)
+                restrict_to_current_user(assets_root)
                 pending_directory = assets_root / f".pending-{self._transaction_id}"
                 if pending_directory.exists() or self.asset_directory.exists():
                     raise LicenseIssueError(
                         "The settings transaction destination already exists."
                     )
                 pending_directory.mkdir()
+                restrict_to_current_user(pending_directory)
 
                 if use_keys:
                     if (
@@ -163,17 +171,17 @@ class SettingsTransaction:
                         raise LicenseIssueError("The staged key pair is unavailable.")
                     self._copy_durable(
                         self._staged_key_pair.private_key_path,
-                        pending_directory / "private.pem",
+                        pending_directory / PRIVATE_KEY_FILENAME,
                         private=True,
                         expected_digest=self._staged_key_digests[0],
                     )
                     self._copy_durable(
                         self._staged_key_pair.public_key_path,
-                        pending_directory / "public.pem",
+                        pending_directory / PUBLIC_KEY_FILENAME,
                         expected_digest=self._staged_key_digests[1],
                     )
                     if public_key_fingerprint(
-                        pending_directory / "public.pem"
+                        pending_directory / PUBLIC_KEY_FILENAME
                     ) != self._staged_key_pair.info.fingerprint:
                         raise LicenseIssueError(
                             "The staged public key changed during commit."
@@ -241,7 +249,7 @@ class SettingsTransaction:
                 f"Unable to commit settings transaction: {exc}.{detail}"
             ) from exc
         self.discard()
-        return committed
+        return project_store.load(committed.project_id)
 
     def discard(self) -> None:
         if self._closed:
@@ -275,15 +283,20 @@ class SettingsTransaction:
     def _ensure_staging_root(self) -> Path:
         self._ensure_open()
         if self._staging_root is None:
+            staging_root: Path | None = None
             try:
                 self._project_directory.mkdir(parents=True, exist_ok=True)
+                restrict_to_current_user(self._project_directory)
                 staging_root = (
                     self._project_directory
                     / f".settings-staging-{self._transaction_id}"
                 )
                 staging_root.mkdir()
+                restrict_to_current_user(staging_root)
                 self._staging_root = staging_root
-            except OSError as exc:
+            except (OSError, LicenseIssueError) as exc:
+                if staging_root is not None:
+                    shutil.rmtree(staging_root, ignore_errors=True)
                 raise LicenseIssueError(
                     f"Unable to create settings staging directory: {exc}"
                 ) from exc
@@ -319,10 +332,7 @@ class SettingsTransaction:
                 target.flush()
                 os.fsync(target.fileno())
             if private:
-                try:
-                    destination.chmod(0o600)
-                except OSError:
-                    pass
+                restrict_to_current_user(destination)
             if digest.hexdigest() != expected_digest:
                 raise LicenseIssueError(
                     f"Staged file changed after validation: {source.name}."

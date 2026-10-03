@@ -82,7 +82,7 @@ def _read_config(path: Path) -> dict[str, Any]:
     if (
         isinstance(schema_version, bool)
         or not isinstance(schema_version, int)
-        or schema_version != PORTABLE_CONFIG_SCHEMA_VERSION
+        or schema_version not in {PORTABLE_CONFIG_SCHEMA_VERSION, 2}
     ):
         raise LicenseIssueError(
             f"Unsupported project settings schema version: {schema_version!r}."

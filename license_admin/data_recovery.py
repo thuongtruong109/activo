@@ -58,8 +58,11 @@ def load_project_records(settings: AdminSettings) -> ProjectDataLoadResult:
     if not raw_records:
         return ProjectDataLoadResult(state=ProjectDataState.EMPTY)
 
+    verification_paths = settings.trusted_public_key_paths or (
+        settings.public_key_path,
+    )
     try:
-        public_key = settings.public_key_path.read_bytes()
+        public_keys = tuple(path.read_bytes() for path in verification_paths)
     except PermissionError as exc:
         return ProjectDataLoadResult(
             state=ProjectDataState.PERMISSION_DENIED,
@@ -74,7 +77,7 @@ def load_project_records(settings: AdminSettings) -> ProjectDataLoadResult:
     try:
         verified = validate_record_signatures(
             raw_records,
-            public_key,
+            public_keys,
             expected_issuer=settings.issuer,
             expected_audience=settings.audience,
         )

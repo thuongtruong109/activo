@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from issue_license import LicenseIssueError
+from license_admin.windows_security import restrict_to_current_user
 
 
 MAX_SERVICE_ACCOUNT_FILE_BYTES = 1024 * 1024
@@ -104,6 +105,8 @@ def import_service_account(
     raw, _document = _read_document(source)
     target = project_directory / SERVICE_ACCOUNT_FILENAME
     if source.resolve(strict=False) == target.resolve(strict=False):
+        restrict_to_current_user(project_directory)
+        restrict_to_current_user(target)
         return ImportedServiceAccount(path=target, info=info)
     if target.exists() and not overwrite:
         raise LicenseIssueError(
@@ -112,6 +115,7 @@ def import_service_account(
 
     try:
         project_directory.mkdir(parents=True, exist_ok=True)
+        restrict_to_current_user(project_directory)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{SERVICE_ACCOUNT_FILENAME}.",
             suffix=".tmp",
@@ -123,11 +127,11 @@ def import_service_account(
                 temporary_file.write(raw)
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
-            temporary_path.chmod(0o600)
+            restrict_to_current_user(temporary_path)
             inspect_service_account(temporary_path)
             os.replace(temporary_path, target)
         finally:
             temporary_path.unlink(missing_ok=True)
-    except OSError as exc:
+    except (OSError, LicenseIssueError) as exc:
         raise LicenseIssueError(f"Unable to import service-account JSON: {exc}") from exc
     return ImportedServiceAccount(path=target, info=info)

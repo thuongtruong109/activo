@@ -75,6 +75,16 @@ from workspace_temp import workspace_temp_dir
 
 
 class LicenseAdminUiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._acl_patchers = (
+            patch("license_admin.key_store.restrict_to_current_user"),
+            patch("license_admin.settings_transaction.restrict_to_current_user"),
+            patch("license_admin.service_account_store.restrict_to_current_user"),
+        )
+        for acl in self._acl_patchers:
+            acl.start()
+            self.addCleanup(acl.stop)
+
     @classmethod
     def setUpClass(cls) -> None:
         existing = QApplication.instance()
@@ -167,6 +177,25 @@ class LicenseAdminUiTests(unittest.TestCase):
 
             show_toast.assert_called_once_with("Đã tải dữ liệu", tone="success")
             show_modal.assert_not_called()
+        finally:
+            window.close()
+
+    def test_dpapi_failure_does_not_prompt_for_a_pem_password(self) -> None:
+        window = self.create_window()
+        try:
+            with (
+                patch(
+                    "license_admin.main_window.load_private_key_file",
+                    side_effect=LicenseIssueError("DPAPI access denied"),
+                ),
+                patch.object(QInputDialog, "getText") as password_prompt,
+                patch.object(QMessageBox, "critical") as show_error,
+            ):
+                loaded = window._load_signing_key()
+
+            self.assertIsNone(loaded)
+            password_prompt.assert_not_called()
+            show_error.assert_called_once()
         finally:
             window.close()
 
@@ -777,6 +806,8 @@ class LicenseAdminUiTests(unittest.TestCase):
                 window.import_project_config_action,
                 window.settings_action,
                 window.new_project_action,
+                window.resign_licenses_action,
+                window.revoke_rotated_key_action,
             ):
                 self.assertFalse(action.isEnabled())
             self.assertFalse(window.project_combo.isEnabled())

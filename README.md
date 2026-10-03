@@ -25,17 +25,23 @@ python -m PyInstaller --noconfirm --clean license_admin.spec
 ```
 
 File `dist/LicenseAdmin.exe` dùng cùng logo với header, cửa sổ, modal, taskbar
-và icon hiển thị trong File Explorer. Khi chạy bản exe, thư mục `projects/`
-được tạo cạnh file exe để dữ liệu không nằm trong thư mục giải nén tạm.
+và icon hiển thị trong File Explorer. Trên Windows, dữ liệu mutable mặc định
+nằm tại `%LOCALAPPDATA%\Activo\LicenseAdmin\projects`, không nằm cạnh executable.
+Có thể đặt `ACTIVO_PROJECTS_ROOT` khi cần một root riêng có kiểm soát.
 
 ## Quản lý nhiều dự án
 
 Mỗi thư mục `projects/<project-id>/` là một profile độc lập, gồm:
 
 - `project.json`: cấu hình có version riêng của dự án, gồm tên, đường dẫn dữ
-  liệu/key, issuer, audience và Google Sheet.
-- `private.pem`: khóa ký bí mật, chỉ nằm trên máy quản trị.
+  liệu, issuer, audience và Google Sheet; không chứa key ID/lifecycle.
+- `private.key` (schema cũ đã migrate) hoặc
+  `.settings-assets/<generation>/private.key` (key mới import): khóa ký bí mật
+  hiện hành. Trên Windows đây là DPAPI envelope ràng buộc với user đã import,
+  không phải PEM plaintext.
 - `public.pem`: khóa công khai tương ứng, phải trùng với khóa nhúng trong app.
+- `keyring.json`: key ID và lifecycle `created_at`, `rotated_at`, `revoked_at`,
+  tách khỏi project metadata và không chứa private-key material.
 - `service-account.json`: credential Google riêng của project (nếu dùng đồng bộ
   có quyền ghi).
 - `license_admin_data.csv`: dữ liệu quản trị cục bộ.
@@ -53,13 +59,37 @@ Chọn **Dự án → Nhập cặp key…** hoặc nút **Nhập cặp key vào 
 1. đọc PEM với giới hạn kích thước an toàn;
 2. yêu cầu mật khẩu nếu private key được mã hóa nhưng không lưu mật khẩu;
 3. xác minh cả hai đều là RSA từ 2048 bit và thực sự thuộc cùng một cặp;
-4. cảnh báo nếu cặp key mới làm license hiện có không còn hợp lệ;
-5. ghi nguyên tử vào `projects/<project-id>/private.pem` và `public.pem`, có
-rollback nếu một bước ghi thất bại.
+4. bọc private key bằng DPAPI của current user trên Windows;
+5. đặt Windows DACL chỉ cho current user, rồi ghi cặp key theo generation và
+   atomically chuyển profile sang generation mới;
+6. ghi key ID/lifecycle vào `keyring.json`; public key cũ tiếp tục được License
+   Admin tin cậy cho tới khi bị revoke.
 
 Bạn cũng có thể trỏ profile tới key ở vị trí khác trong **Cài đặt**; khi lưu,
 ứng dụng vẫn xác minh cặp key trước khi chấp nhận. Cách import được khuyến nghị
 vì giữ từng project tự chứa và giảm nguy cơ chọn nhầm key.
+
+### Rotate, ký lại và revoke key
+
+1. Sao lưu project và triển khai public key mới (hoặc cơ chế tin cậy nhiều key)
+   tới ứng dụng khách trước khi phát hành token bằng key mới.
+2. Chọn **Quản lý project → Nhập cặp key…**. Key cũ được ghi `rotated_at`, key
+   mới trở thành active; private key generation cũ không bị ghi đè.
+3. Chọn **Dữ liệu → Ký lại license đang hiệu lực…**, kiểm tra số lượng được
+   ký lại, rồi push snapshot mới lên Sheet. License hết hạn/lỗi được giữ nguyên.
+4. Chỉ sau khi client và feed không còn cần key cũ, chọn **Quản lý project →
+   Revoke key đã rotate…**. UI hiển thị số record local còn mang key ID đó và
+   yêu cầu xác nhận; thao tác ghi `revoked_at` và loại public key khỏi trust set.
+
+Project schema v1 dùng `private.pem` được migrate khi project được mở: ứng dụng
+ghi và verify `private.key` trước, atomically cập nhật profile, siết DACL của
+file cũ rồi mới xóa. Lần chạy đầu với dữ liệu legacy cạnh executable sẽ sao
+chép sang LocalAppData sau khi siết ACL cho cả bản mới và bản rollback cũ.
+
+DPAPI gắn bản `private.key` đã cài với Windows user/profile. Để phục hồi sang
+máy hoặc tài khoản khác, phải giữ một bản PEM nguồn được mã hóa trong kho backup
+ngoại tuyến, rồi import lại bằng user đích. Mất cả Windows profile lẫn PEM nguồn
+có thể khiến khóa ký không thể phục hồi.
 
 ### Nhập Google service account và cấu hình
 
@@ -115,7 +145,8 @@ không nên thêm liên kết mã nguồn giữa License Manager với ứng d�
   read-back verification trước khi báo `Synced`.
 - Khóa một tiến trình ghi cho mỗi project; mọi mutation xung đột bị vô hiệu hóa
   trong lúc worker đồng bộ đang chạy.
-- Hỗ trợ private key PEM có mật khẩu; mật khẩu không được lưu.
+- Hỗ trợ private key PEM nguồn có mật khẩu; mật khẩu không được lưu. Private key
+  đã cài được DPAPI bảo vệ theo Windows user và có DACL riêng.
 - Nhập và xác minh cặp RSA key riêng cho từng project, có chống ghi đè nhầm và
   rollback khi ghi lỗi.
 - Nhập Google service-account JSON riêng cho từng project, có kiểm tra cấu trúc
@@ -131,7 +162,8 @@ không nên thêm liên kết mã nguồn giữa License Manager với ứng d�
 
 ## Bảo mật
 
-`private.pem`, service-account JSON và CSV quản trị đều được `.gitignore`.
+`private.key`, PEM nguồn, service-account JSON và CSV quản trị đều được
+`.gitignore`.
 Không commit, gửi, đưa lên Drive hoặc đóng gói những file này. Mỗi sản phẩm nên
 dùng một cặp RSA key, issuer, audience và Google Sheet riêng.
 
@@ -142,7 +174,10 @@ quyền sửa Sheet và tránh chỉnh trực tiếp worksheet đích trong lúc
 
 ## CLI
 
+CLI nhận PEM nguồn do người vận hành quản lý; không trỏ CLI trực tiếp vào
+`private.key` vì file đó là DPAPI envelope dành cho License Admin:
+
 ```powershell
-python issue_license.py --key projects/my-product/private.pem --username "Customer" --hwid <64-char-hwid> --days 365 --issuer my-product-license-server --audience my-product-desktop
-python migrate_license_csv.py --key projects/my-product/private.pem --input legacy.csv --output signed.csv --issuer my-product-license-server --audience my-product-desktop
+python issue_license.py --key C:\secure\publisher-private.pem --username "Customer" --hwid <64-char-hwid> --days 365 --issuer my-product-license-server --audience my-product-desktop
+python migrate_license_csv.py --key C:\secure\publisher-private.pem --input legacy.csv --output signed.csv --issuer my-product-license-server --audience my-product-desktop
 ```

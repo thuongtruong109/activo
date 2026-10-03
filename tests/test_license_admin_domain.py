@@ -86,6 +86,40 @@ class LicenseAdminDomainTests(unittest.TestCase):
         self.assertEqual(checked.status(now), LicenseStatus.INVALID)
         self.assertIn("signature", (checked.parse_error or "").casefold())
 
+    def test_rotated_nonrevoked_public_keys_keep_old_licenses_valid(self) -> None:
+        now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
+        old_hwid = "7" * 64
+        new_hwid = "8" * 64
+        new_private = rsa.generate_private_key(
+            public_exponent=65_537,
+            key_size=2_048,
+        )
+        old_record = parse_signed_csv(
+            f"{old_hwid},{self._token(old_hwid, now=now)}\n"
+        )[0]
+        new_record = parse_signed_csv(
+            f"{new_hwid},{issue_license(new_private, username='New', hwid=new_hwid, days=365, issuer=TEST_ISSUER, audience=TEST_AUDIENCE, now=now)}\n"
+        )[0]
+        public_keys = (
+            new_private.public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            ),
+            self.private_key.public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            ),
+        )
+
+        checked = validate_record_signatures(
+            [old_record, new_record],
+            public_keys,
+            expected_issuer=TEST_ISSUER,
+            expected_audience=TEST_AUDIENCE,
+        )
+
+        self.assertTrue(all(record.parse_error is None for record in checked))
+
     def test_duplicate_hwid_is_rejected(self) -> None:
         hwid = "c" * 64
         with self.assertRaisesRegex(LicenseIssueError, "duplicate HWID"):

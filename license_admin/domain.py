@@ -104,6 +104,24 @@ def _claim_timestamp(claims: dict[str, Any], name: str) -> datetime:
         raise LicenseIssueError(f"JWT claim {name!r} is out of range.") from exc
 
 
+def license_key_id(token: str) -> str | None:
+    """Return a well-formed JWT key ID without trusting the token."""
+    try:
+        parts = token.strip().split(".")
+        if len(parts) != 3:
+            return None
+        header = json.loads(
+            _decode_segment(parts[0]).decode("utf-8"),
+            object_pairs_hook=_unique_json,
+        )
+        if not isinstance(header, dict):
+            return None
+        key_id = header.get("kid")
+        return key_id if isinstance(key_id, str) and key_id else None
+    except (LicenseIssueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
 def inspect_license(
     hwid: str,
     token: str,
@@ -259,27 +277,71 @@ def serialize_signed_csv(records: Iterable[LicenseRecord]) -> str:
 
 def validate_record_signatures(
     records: Iterable[LicenseRecord],
-    public_key_pem: bytes,
+    public_key_pem: bytes | Iterable[bytes],
     *,
     expected_issuer: str | None = None,
     expected_audience: str | None = None,
 ) -> list[LicenseRecord]:
-    try:
-        loaded_key = serialization.load_pem_public_key(public_key_pem)
-    except (TypeError, ValueError) as exc:
-        raise LicenseIssueError("License verification public key is invalid.") from exc
-    if not isinstance(loaded_key, rsa.RSAPublicKey) or loaded_key.key_size < 2_048:
-        raise LicenseIssueError("License verification key is not a strong RSA key.")
-    return [
-        inspect_license(
-            record.hwid,
-            record.token,
-            expected_issuer=expected_issuer,
-            expected_audience=expected_audience,
-            _verification_key=loaded_key,
+    materials = (
+        (public_key_pem,)
+        if isinstance(public_key_pem, bytes)
+        else tuple(public_key_pem)
+    )
+    if not materials:
+        raise LicenseIssueError("No license verification public keys are configured.")
+    loaded_keys: list[rsa.RSAPublicKey] = []
+    keys_by_id: dict[str, rsa.RSAPublicKey] = {}
+    for material in materials:
+        try:
+            candidate = serialization.load_pem_public_key(material)
+        except (TypeError, ValueError) as exc:
+            raise LicenseIssueError("License verification public key is invalid.") from exc
+        if not isinstance(candidate, rsa.RSAPublicKey) or candidate.key_size < 2_048:
+            raise LicenseIssueError("License verification key is not a strong RSA key.")
+        public_der = candidate.public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
         )
-        for record in records
-    ]
+        key_id = hashlib.sha256(public_der).hexdigest()[:16]
+        if key_id not in keys_by_id:
+            keys_by_id[key_id] = candidate
+            loaded_keys.append(candidate)
+
+    verified: list[LicenseRecord] = []
+    for record in records:
+        selected: rsa.RSAPublicKey | None = None
+        token_key_id = license_key_id(record.token)
+        if token_key_id is not None:
+            selected = keys_by_id.get(token_key_id)
+        if selected is not None:
+            verified.append(
+                inspect_license(
+                    record.hwid,
+                    record.token,
+                    expected_issuer=expected_issuer,
+                    expected_audience=expected_audience,
+                    _verification_key=selected,
+                )
+            )
+            continue
+
+        attempts = [
+            inspect_license(
+                record.hwid,
+                record.token,
+                expected_issuer=expected_issuer,
+                expected_audience=expected_audience,
+                _verification_key=key,
+            )
+            for key in loaded_keys
+        ]
+        verified.append(
+            next(
+                (attempt for attempt in attempts if attempt.parse_error is None),
+                attempts[0],
+            )
+        )
+    return verified
 
 
 def records_digest(records: Iterable[LicenseRecord]) -> str:

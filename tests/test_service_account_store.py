@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -36,6 +37,11 @@ def write_service_account(path: Path, *, email: str) -> Path:
 
 
 class ServiceAccountStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        acl = patch("license_admin.service_account_store.restrict_to_current_user")
+        acl.start()
+        self.addCleanup(acl.stop)
+
     def test_valid_service_account_is_inspected_and_loaded(self) -> None:
         with workspace_temp_dir() as directory:
             source = write_service_account(

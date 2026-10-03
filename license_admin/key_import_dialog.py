@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
 
 from issue_license import LicenseIssueError
 from license_admin.key_store import (
+    PRIVATE_KEY_FILENAME,
+    PUBLIC_KEY_FILENAME,
     ImportedKeyPair,
     KeyPasswordRequiredError,
     import_key_pair,
@@ -42,12 +44,16 @@ class KeyImportDialog(QDialog):
         record_count: int,
         install_directory: Path | None = None,
         display_directory: Path | None = None,
+        current_private_key_path: Path | None = None,
+        current_public_key_path: Path | None = None,
     ) -> None:
         super().__init__(parent)
         self._project_directory = project_directory
         self._install_directory = install_directory or project_directory
         self._display_directory = display_directory or project_directory
         self._record_count = record_count
+        self._current_private_key_path = current_private_key_path
+        self._current_public_key_path = current_public_key_path
         self._imported_pair: ImportedKeyPair | None = None
         self.setWindowTitle(text("key.title", project=project_name))
         self.setMinimumWidth(680)
@@ -84,8 +90,8 @@ class KeyImportDialog(QDialog):
             text(
                 "key.destination",
                 path=(
-                    f"{self._display_directory / 'private.pem'}\n"
-                    f"{self._display_directory / 'public.pem'}"
+                    f"{self._display_directory / PRIVATE_KEY_FILENAME}\n"
+                    f"{self._display_directory / PUBLIC_KEY_FILENAME}"
                 ),
             )
         )
@@ -175,13 +181,17 @@ class KeyImportDialog(QDialog):
             QMessageBox.warning(self, text("key.invalid_pair"), str(exc))
             return
 
-        private_target = self._project_directory / "private.pem"
-        public_target = self._project_directory / "public.pem"
-        install_private = self._install_directory / "private.pem"
-        install_public = self._install_directory / "public.pem"
+        private_target = self._project_directory / PRIVATE_KEY_FILENAME
+        public_target = self._project_directory / PUBLIC_KEY_FILENAME
+        install_private = self._install_directory / PRIVATE_KEY_FILENAME
+        install_public = self._install_directory / PUBLIC_KEY_FILENAME
         source_is_target = (
-            private_path.resolve(strict=False) == private_target.resolve(strict=False)
-            and public_path.resolve(strict=False) == public_target.resolve(strict=False)
+            self._current_private_key_path is not None
+            and self._current_public_key_path is not None
+            and private_path.resolve(strict=False)
+            == self._current_private_key_path.resolve(strict=False)
+            and public_path.resolve(strict=False)
+            == self._current_public_key_path.resolve(strict=False)
         )
         targets_exist = any(
             path.exists()
@@ -190,12 +200,21 @@ class KeyImportDialog(QDialog):
                 public_target,
                 install_private,
                 install_public,
+                self._current_private_key_path,
+                self._current_public_key_path,
             )
+            if path is not None
         )
         if targets_exist and not source_is_target:
             changed_public_key = True
             comparison_key = (
-                install_public if install_public.is_file() else public_target
+                install_public
+                if install_public.is_file()
+                else (
+                    self._current_public_key_path
+                    if self._current_public_key_path is not None
+                    else public_target
+                )
             )
             if comparison_key.is_file():
                 try:

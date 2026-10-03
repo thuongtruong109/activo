@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -12,8 +12,15 @@ import unicodedata
 from typing import Any
 
 from issue_license import LicenseIssueError
+from license_admin.app_data import application_data_root, migrate_legacy_projects
 from license_admin.atomic_file import atomic_write_text
 from license_admin.google_sheets import GoogleSheetsConfig, extract_spreadsheet_id
+from license_admin.key_store import (
+    LEGACY_PRIVATE_KEY_FILENAME,
+    PRIVATE_KEY_FILENAME,
+    migrate_legacy_private_key,
+)
+from license_admin.key_identity import KeyIdentityStore
 
 
 APPLICATION_ROOT = (
@@ -21,11 +28,13 @@ APPLICATION_ROOT = (
     if getattr(sys, "frozen", False)
     else Path(__file__).resolve().parents[1]
 )
+LEGACY_PROJECTS_ROOT = APPLICATION_ROOT / "projects"
 PROJECTS_ROOT = Path(
-    os.environ.get("ACTIVO_PROJECTS_ROOT") or APPLICATION_ROOT / "projects"
+    os.environ.get("ACTIVO_PROJECTS_ROOT")
+    or application_data_root() / "projects"
 ).expanduser()
 PROFILE_FILENAME = "project.json"
-PROFILE_SCHEMA_VERSION = 1
+PROFILE_SCHEMA_VERSION = 2
 _PROJECT_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 
 
@@ -84,6 +93,7 @@ class AdminSettings:
     public_csv_url: str
     issuer: str
     audience: str
+    trusted_public_key_paths: tuple[Path, ...] = ()
 
     def sheets_config(self) -> GoogleSheetsConfig:
         return GoogleSheetsConfig(
@@ -110,8 +120,10 @@ class ProjectProfileScan:
 class ProjectStore:
     """Persist independent publisher settings for multiple products."""
 
-    def __init__(self, root: Path = PROJECTS_ROOT) -> None:
-        self.root = root
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = root or PROJECTS_ROOT
+        if root is None and not os.environ.get("ACTIVO_PROJECTS_ROOT"):
+            migrate_legacy_projects(LEGACY_PROJECTS_ROOT, self.root)
 
     def profile_path(self, project_id: str) -> Path:
         normalized = normalize_project_id(project_id)
@@ -152,7 +164,47 @@ class ProjectStore:
         path = self.profile_path(project_id)
         if not path.is_file():
             raise LicenseIssueError(f"Project profile does not exist: {project_id}")
-        return self._load_path(path)
+        settings = self._load_path(path)
+        legacy_private = path.parent / LEGACY_PRIVATE_KEY_FILENAME
+        protected_private = path.parent / PRIVATE_KEY_FILENAME
+        if (
+            settings.signing_key_path.resolve(strict=False)
+            == legacy_private.resolve(strict=False)
+            and migrate_legacy_private_key(
+                legacy_private,
+                protected_private,
+                remove_legacy=False,
+            )
+        ):
+            settings = AdminSettings(
+                project_id=settings.project_id,
+                project_name=settings.project_name,
+                local_csv_path=settings.local_csv_path,
+                signing_key_path=protected_private,
+                public_key_path=settings.public_key_path,
+                service_account_path=settings.service_account_path,
+                spreadsheet_id=settings.spreadsheet_id,
+                worksheet=settings.worksheet,
+                public_csv_url=settings.public_csv_url,
+                issuer=settings.issuer,
+                audience=settings.audience,
+            )
+            try:
+                self.save(settings)
+            except Exception:
+                protected_private.unlink(missing_ok=True)
+                raise
+            try:
+                legacy_private.unlink()
+            except OSError:
+                # The legacy copy was already reduced to the current-user DACL.
+                pass
+        identity_store = KeyIdentityStore(path.parent)
+        identity_store.reconcile_active(settings.public_key_path)
+        return replace(
+            settings,
+            trusted_public_key_paths=identity_store.trusted_public_key_paths(),
+        )
 
     def ensure_default(self) -> AdminSettings:
         scan = self.scan_profiles()
@@ -220,6 +272,9 @@ class ProjectStore:
             raise LicenseIssueError(
                 "Project name, issuer and audience must not be empty."
             )
+        identity_store = KeyIdentityStore(profile_directory)
+        identity_snapshot = identity_store.snapshot()
+        identity_store.reconcile_active(settings.public_key_path)
         try:
             atomic_write_text(
                 profile_directory / PROFILE_FILENAME,
@@ -227,6 +282,13 @@ class ProjectStore:
                 encoding="utf-8",
             )
         except OSError as exc:
+            try:
+                identity_store.restore(identity_snapshot)
+            except LicenseIssueError as rollback_exc:
+                raise LicenseIssueError(
+                    f"Unable to save project profile: {exc}. "
+                    f"Key identity rollback also failed: {rollback_exc}"
+                ) from exc
             raise LicenseIssueError(f"Unable to save project profile: {exc}") from exc
 
     def _new_settings(self, project_name: str, project_id: str) -> AdminSettings:
@@ -235,7 +297,7 @@ class ProjectStore:
             project_id=project_id,
             project_name=project_name,
             local_csv_path=profile_directory / "license_admin_data.csv",
-            signing_key_path=profile_directory / "private.pem",
+            signing_key_path=profile_directory / PRIVATE_KEY_FILENAME,
             public_key_path=profile_directory / "public.pem",
             service_account_path=None,
             spreadsheet_id="",
@@ -256,7 +318,7 @@ class ProjectStore:
         if (
             isinstance(schema_version, bool)
             or not isinstance(schema_version, int)
-            or schema_version != PROFILE_SCHEMA_VERSION
+            or schema_version not in {1, PROFILE_SCHEMA_VERSION}
         ):
             raise LicenseIssueError(
                 f"Unsupported project profile schema version: {schema_version!r}."
@@ -277,7 +339,15 @@ class ProjectStore:
             ),
             signing_key_path=_resolve_profile_path(
                 profile_directory,
-                _optional_text(document, "private_key", "private.pem"),
+                _optional_text(
+                    document,
+                    "private_key",
+                    (
+                        LEGACY_PRIVATE_KEY_FILENAME
+                        if schema_version == 1
+                        else PRIVATE_KEY_FILENAME
+                    ),
+                ),
             ),
             public_key_path=_resolve_profile_path(
                 profile_directory,

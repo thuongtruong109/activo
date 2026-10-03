@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import os
 from pathlib import Path
@@ -12,10 +12,19 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from issue_license import LicenseIssueError
+from license_admin.secret_protection import (
+    is_protected_secret,
+    protect_secret,
+    unprotect_secret,
+)
+from license_admin.windows_security import restrict_to_current_user
 
 
 MAX_KEY_FILE_BYTES = 64 * 1024
 MIN_RSA_KEY_SIZE = 2_048
+PRIVATE_KEY_FILENAME = "private.key"
+LEGACY_PRIVATE_KEY_FILENAME = "private.pem"
+PUBLIC_KEY_FILENAME = "public.pem"
 
 
 class KeyPasswordRequiredError(LicenseIssueError):
@@ -27,6 +36,7 @@ class KeyPairInfo:
     fingerprint: str
     key_size: int
     private_key_encrypted: bool
+    private_key_os_protected: bool = False
 
     @property
     def short_fingerprint(self) -> str:
@@ -53,6 +63,12 @@ def _read_key_file(path: Path, label: str) -> bytes:
         raise
     except OSError as exc:
         raise LicenseIssueError(f"Unable to read {label} {path}: {exc}") from exc
+
+
+def _read_private_key_file(path: Path) -> tuple[bytes, bool]:
+    stored = _read_key_file(path, "private key")
+    protected = is_protected_secret(stored)
+    return unprotect_secret(stored), protected
 
 
 def _load_private_key(
@@ -98,9 +114,22 @@ def inspect_key_pair(
     password: bytes | None = None,
 ) -> KeyPairInfo:
     """Validate two PEM files and prove that they form one RSA key pair."""
-    private_pem = _read_key_file(private_key_path, "private key")
+    private_pem, os_protected = _read_private_key_file(private_key_path)
     public_pem = _read_key_file(public_key_path, "public key")
-    return _inspect_key_pair_material(private_pem, public_pem, password)
+    return replace(
+        _inspect_key_pair_material(private_pem, public_pem, password),
+        private_key_os_protected=os_protected,
+    )
+
+
+def load_private_key_file(
+    private_key_path: Path,
+    password: bytes | None = None,
+) -> rsa.RSAPrivateKey:
+    """Decrypt an installed DPAPI envelope and load its RSA private key."""
+    private_pem, _os_protected = _read_private_key_file(private_key_path)
+    private_key, _pem_encrypted = _load_private_key(private_pem, password)
+    return private_key
 
 
 def _inspect_key_pair_material(
@@ -173,18 +202,22 @@ def import_key_pair(
     overwrite: bool = False,
 ) -> ImportedKeyPair:
     """Validate and atomically copy a pair into one project directory."""
-    private_pem = _read_key_file(private_key_path, "private key")
+    private_pem, source_os_protected = _read_private_key_file(private_key_path)
     public_pem = _read_key_file(public_key_path, "public key")
-    info = _inspect_key_pair_material(private_pem, public_pem, password)
+    info = replace(
+        _inspect_key_pair_material(private_pem, public_pem, password),
+        private_key_os_protected=source_os_protected,
+    )
     try:
         destination_directory.mkdir(parents=True, exist_ok=True)
+        restrict_to_current_user(destination_directory)
     except OSError as exc:
         raise LicenseIssueError(
             f"Unable to create project directory {destination_directory}: {exc}"
         ) from exc
 
-    private_target = destination_directory / "private.pem"
-    public_target = destination_directory / "public.pem"
+    private_target = destination_directory / PRIVATE_KEY_FILENAME
+    public_target = destination_directory / PUBLIC_KEY_FILENAME
     same_private = private_key_path.resolve(strict=False) == private_target.resolve(
         strict=False
     )
@@ -192,6 +225,7 @@ def import_key_pair(
         strict=False
     )
     if same_private and same_public:
+        restrict_to_current_user(private_target)
         return ImportedKeyPair(private_target, public_target, info)
     existing = [path for path in (private_target, public_target) if path.exists()]
     if existing and not overwrite:
@@ -206,14 +240,18 @@ def import_key_pair(
     private_installed = False
     public_installed = False
     try:
-        private_temp = _temporary_path(destination_directory, ".private.pem.")
+        private_temp = _temporary_path(destination_directory, ".private.key.")
         public_temp = _temporary_path(destination_directory, ".public.pem.")
-        private_temp.write_bytes(private_pem)
-        public_temp.write_bytes(public_pem)
-        try:
-            os.chmod(private_temp, 0o600)
-        except OSError:
-            pass
+        protected_private = protect_secret(private_pem)
+        with private_temp.open("wb") as private_stream:
+            private_stream.write(protected_private)
+            private_stream.flush()
+            os.fsync(private_stream.fileno())
+        with public_temp.open("wb") as public_stream:
+            public_stream.write(public_pem)
+            public_stream.flush()
+            os.fsync(public_stream.fileno())
+        restrict_to_current_user(private_temp)
 
         if private_target.exists():
             private_backup = _temporary_path(destination_directory, ".private.backup.")
@@ -226,9 +264,10 @@ def import_key_pair(
 
         os.replace(private_temp, private_target)
         private_installed = True
+        restrict_to_current_user(private_target)
         os.replace(public_temp, public_target)
         public_installed = True
-    except OSError as exc:
+    except (OSError, LicenseIssueError) as exc:
         rollback_errors: list[str] = []
         for target, backup, installed in (
             (private_target, private_backup, private_installed),
@@ -255,4 +294,47 @@ def import_key_pair(
         _unlink_quietly(private_temp)
         _unlink_quietly(public_temp)
 
-    return ImportedKeyPair(private_target, public_target, info)
+    return ImportedKeyPair(
+        private_target,
+        public_target,
+        replace(
+            info,
+            private_key_os_protected=is_protected_secret(protected_private),
+        ),
+    )
+
+
+def migrate_legacy_private_key(
+    legacy_path: Path,
+    destination_path: Path,
+    *,
+    remove_legacy: bool = True,
+) -> bool:
+    """Copy a legacy PEM into the current-user secret envelope, then remove it."""
+    if not legacy_path.is_file() or destination_path.exists():
+        return False
+    private_pem, _already_protected = _read_private_key_file(legacy_path)
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    restrict_to_current_user(destination_path.parent)
+    temporary = _temporary_path(destination_path.parent, ".private-migration.")
+    try:
+        protected = protect_secret(private_pem)
+        with temporary.open("wb") as stream:
+            stream.write(protected)
+            stream.flush()
+            os.fsync(stream.fileno())
+        restrict_to_current_user(temporary)
+        if unprotect_secret(temporary.read_bytes()) != private_pem:
+            raise LicenseIssueError("Private-key migration verification failed.")
+        os.replace(temporary, destination_path)
+        restrict_to_current_user(destination_path)
+        # Limit the legacy file before removing the now-redundant plaintext copy.
+        restrict_to_current_user(legacy_path)
+        if remove_legacy:
+            legacy_path.unlink()
+    except Exception:
+        _unlink_quietly(temporary)
+        if destination_path.exists():
+            _unlink_quietly(destination_path)
+        raise
+    return True

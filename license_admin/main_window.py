@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from issue_license import LicenseIssueError, issue_license_until, load_private_key
+from issue_license import LicenseIssueError, issue_license_until
 from license_admin.app_identity import app_icon, app_logo_pixmap
 from license_admin.dialogs import (
     LicenseEditorDialog,
@@ -58,6 +58,7 @@ from license_admin.data_state_banner import DataStateBanner
 from license_admin.domain import (
     LicenseRecord,
     LicenseStatus,
+    license_key_id,
     parse_signed_csv,
     records_digest,
     serialize_signed_csv,
@@ -80,6 +81,9 @@ from license_admin.information_dialogs import (
     TermsOfServiceDialog,
 )
 from license_admin.key_import_dialog import KeyImportDialog
+from license_admin.key_identity import KeyIdentityStore
+from license_admin.key_store import KeyPasswordRequiredError, load_private_key_file
+from license_admin.key_rotation import resign_unexpired_records
 from license_admin.localization import (
     LANGUAGES,
     current_language,
@@ -98,6 +102,7 @@ from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.record_transaction import RecordTransaction
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.settings import AdminSettings, ProjectStore, normalize_project_id
+from license_admin.settings_transaction import SettingsTransaction
 from license_admin.storage import LicenseRepository
 from license_admin.sync_models import (
     LocalSyncContext,
@@ -234,6 +239,14 @@ class LicenseAdminWindow(QMainWindow):
             svg_icon("key"), text("action.import_keys"), self
         )
         self.import_project_keys_action.triggered.connect(self._import_project_keys)
+        self.resign_licenses_action = QAction(
+            svg_icon("key"), text("action.resign_licenses"), self
+        )
+        self.resign_licenses_action.triggered.connect(self._resign_licenses)
+        self.revoke_rotated_key_action = QAction(
+            svg_icon("trash"), text("action.revoke_rotated_key"), self
+        )
+        self.revoke_rotated_key_action.triggered.connect(self._revoke_rotated_key)
         self.import_google_credentials_action = QAction(
             svg_icon("upload"), text("action.import_credentials"), self
         )
@@ -639,6 +652,7 @@ class LicenseAdminWindow(QMainWindow):
         self.file_menu = RoundedMenu(text("nav.data"), self)
         self.file_menu.addAction(self.import_signed_action)
         self.file_menu.addAction(self.import_legacy_action)
+        self.file_menu.addAction(self.resign_licenses_action)
         self.file_menu.addAction(self.export_action)
         self.license_menu = RoundedMenu(text("nav.license"), self)
         self.license_menu.addAction(self.new_action)
@@ -718,6 +732,8 @@ class LicenseAdminWindow(QMainWindow):
             (self.new_project_action, "action.new_project"),
             (self.open_project_folder_action, "action.open_project_folder"),
             (self.import_project_keys_action, "action.import_keys"),
+            (self.resign_licenses_action, "action.resign_licenses"),
+            (self.revoke_rotated_key_action, "action.revoke_rotated_key"),
             (self.import_google_credentials_action, "action.import_credentials"),
             (self.import_project_config_action, "action.import_project_config"),
             (self.export_project_config_action, "action.export_project_config"),
@@ -841,6 +857,7 @@ class LicenseAdminWindow(QMainWindow):
         scan = self._project_store.scan_profiles()
         self.project_menu.addAction(self.new_project_action)
         self.project_menu.addAction(self.import_project_keys_action)
+        self.project_menu.addAction(self.revoke_rotated_key_action)
         self.project_menu.addAction(self.import_google_credentials_action)
         self.project_menu.addSeparator()
         self.project_menu.addAction(self.import_project_config_action)
@@ -936,25 +953,36 @@ class LicenseAdminWindow(QMainWindow):
     def _import_project_keys(self) -> None:
         if self._busy:
             return
-        dialog = KeyImportDialog(
-            self,
-            project_name=self._settings.project_name,
-            project_directory=self._project_store.project_directory(
-                self._settings.project_id
-            ),
-            record_count=len(self._records),
+        project_directory = self._project_store.project_directory(
+            self._settings.project_id
         )
+        transaction = SettingsTransaction(project_directory)
+        try:
+            dialog = KeyImportDialog(
+                self,
+                project_name=self._settings.project_name,
+                project_directory=project_directory,
+                record_count=len(self._records),
+                install_directory=transaction.key_staging_directory,
+                display_directory=transaction.asset_directory,
+                current_private_key_path=self._settings.signing_key_path,
+                current_public_key_path=self._settings.public_key_path,
+            )
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("key.import_failed"), str(exc))
+            return
         if dialog.exec() != dialog.DialogCode.Accepted:
+            transaction.discard()
             return
         imported = dialog.imported_pair()
+        transaction.register_key_pair(imported)
         updated = replace(
             self._settings,
-            signing_key_path=imported.private_key_path,
-            public_key_path=imported.public_key_path,
+            signing_key_path=transaction.private_key_path,
+            public_key_path=transaction.public_key_path,
         )
         try:
-            self._project_store.save(updated)
-            self._settings = updated
+            self._settings = transaction.commit(self._project_store, updated)
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("project.update_failed"), str(exc))
             return
@@ -989,6 +1017,113 @@ class LicenseAdminWindow(QMainWindow):
             return
         self._settings = updated
         self._notify(text("project.credential_imported", email=imported.info.client_email))
+
+    def _resign_licenses(self) -> None:
+        if self._busy or not self._ensure_data_writable():
+            return
+        preview_time = datetime.now(timezone.utc)
+        eligible = [
+            record
+            for record in self._records
+            if record.parse_error is None
+            and record.expires_at is not None
+            and record.expires_at > preview_time
+        ]
+        skipped = len(self._records) - len(eligible)
+        if not eligible:
+            self._notify(text("key.resign_none"), tone="info")
+            return
+        answer = QMessageBox.question(
+            self,
+            text("key.resign_title"),
+            text("key.resign_body", count=len(eligible), skipped=skipped),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        private_key = self._load_signing_key()
+        if private_key is None:
+            return
+        try:
+            result = resign_unexpired_records(
+                self._records,
+                private_key,
+                issuer=self._settings.issuer,
+                audience=self._settings.audience,
+                now=datetime.now(timezone.utc),
+            )
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("license.sign_failed"), str(exc))
+            return
+        if self._commit_records(RecordTransaction.sorted_records(result.records)) is not None:
+            self._notify(
+                text(
+                    "key.resigned",
+                    count=result.resigned_count,
+                    skipped=result.unchanged_count,
+                )
+            )
+
+    def _revoke_rotated_key(self) -> None:
+        if self._busy or not self._ensure_data_writable():
+            return
+        store = KeyIdentityStore(
+            self._project_store.project_directory(self._settings.project_id)
+        )
+        try:
+            ring = store.load()
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("key.revoke_failed"), str(exc))
+            return
+        candidates = [
+            key
+            for key in ring.keys
+            if key.key_id != ring.active_key_id and key.revoked_at is None
+        ]
+        if not candidates:
+            self._notify(text("key.revoke_none"), tone="info")
+            return
+        labels = [
+            f"{key.key_id} — {key.rotated_at or key.created_at}"
+            for key in candidates
+        ]
+        selected, accepted = QInputDialog.getItem(
+            self,
+            text("key.revoke_title"),
+            text("key.revoke_select"),
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        index = labels.index(selected)
+        key = candidates[index]
+        affected = sum(
+            license_key_id(record.token) == key.key_id for record in self._records
+        )
+        answer = QMessageBox.warning(
+            self,
+            text("key.revoke_title"),
+            text("key.revoke_body", key_id=key.key_id, count=affected),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            updated_ring = store.revoke(key.key_id)
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("key.revoke_failed"), str(exc))
+            return
+        self._settings = replace(
+            self._settings,
+            trusted_public_key_paths=store.trusted_public_key_paths(updated_ring),
+        )
+        self._load_local(show_missing=True)
+        self._refresh_view()
+        self._notify(text("key.revoked", key_id=key.key_id))
 
     def _import_project_config(self) -> None:
         if self._busy:
@@ -1156,18 +1291,24 @@ class LicenseAdminWindow(QMainWindow):
         self.data_state_banner.show()
 
     def _verified_records(self, records: list[LicenseRecord]) -> list[LicenseRecord]:
-        try:
-            public_key = self._settings.public_key_path.read_bytes()
-        except OSError as exc:
-            raise LicenseIssueError(
-                f"Unable to read public key {self._settings.public_key_path}: {exc}"
-            ) from exc
+        public_keys = self._verification_key_materials()
         return validate_record_signatures(
             records,
-            public_key,
+            public_keys,
             expected_issuer=self._settings.issuer,
             expected_audience=self._settings.audience,
         )
+
+    def _verification_key_materials(self) -> tuple[bytes, ...]:
+        paths = self._settings.trusted_public_key_paths or (
+            self._settings.public_key_path,
+        )
+        try:
+            return tuple(path.read_bytes() for path in paths)
+        except OSError as exc:
+            raise LicenseIssueError(
+                f"Unable to read a trusted public key: {exc}"
+            ) from exc
 
     def _refresh_view(self) -> None:
         self.table_model.set_records(self._records)
@@ -1250,8 +1391,8 @@ class LicenseAdminWindow(QMainWindow):
             )
             return None
         try:
-            return load_private_key(path, None)
-        except LicenseIssueError:
+            return load_private_key_file(path)
+        except KeyPasswordRequiredError:
             password, accepted = QInputDialog.getText(
                 self,
                 text("license.unlock"),
@@ -1261,10 +1402,13 @@ class LicenseAdminWindow(QMainWindow):
             if not accepted:
                 return None
             try:
-                return load_private_key(path, password.encode("utf-8"))
+                return load_private_key_file(path, password.encode("utf-8"))
             except LicenseIssueError as exc:
                 QMessageBox.critical(self, text("license.key_missing"), str(exc))
                 return None
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("license.key_missing"), str(exc))
+            return None
 
     def _add_license(self) -> None:
         if self._busy:
@@ -1677,24 +1821,22 @@ class LicenseAdminWindow(QMainWindow):
         box.exec()
         return box.clickedButton() is confirm
 
-    def _verification_values(self) -> tuple[bytes, str, str]:
-        try:
-            public_key = self._settings.public_key_path.read_bytes()
-        except OSError as exc:
-            raise LicenseIssueError(
-                f"Unable to read public key {self._settings.public_key_path}: {exc}"
-            ) from exc
-        return public_key, self._settings.issuer, self._settings.audience
+    def _verification_values(self) -> tuple[tuple[bytes, ...], str, str]:
+        return (
+            self._verification_key_materials(),
+            self._settings.issuer,
+            self._settings.audience,
+        )
 
     @staticmethod
     def _verify_pulled_records(
         records: list[LicenseRecord] | tuple[LicenseRecord, ...],
-        verification: tuple[bytes, str, str],
+        verification: tuple[tuple[bytes, ...], str, str],
     ) -> list[LicenseRecord]:
-        public_key, issuer, audience = verification
+        public_keys, issuer, audience = verification
         verified = validate_record_signatures(
             list(records),
-            public_key,
+            public_keys,
             expected_issuer=issuer,
             expected_audience=audience,
         )
@@ -1788,7 +1930,7 @@ class LicenseAdminWindow(QMainWindow):
         reviewed_public: tuple[list[LicenseRecord], str] | None,
         config: GoogleSheetsConfig | None,
         public_url: str,
-        verification: tuple[bytes, str, str],
+        verification: tuple[tuple[bytes, ...], str, str],
     ) -> None:
         if not self._sync_context_is_current(context):
             self._set_sync_badge("dirty")
@@ -2072,6 +2214,8 @@ class LicenseAdminWindow(QMainWindow):
             self.format_action,
             self.import_signed_action,
             self.import_legacy_action,
+            self.resign_licenses_action,
+            self.revoke_rotated_key_action,
         ):
             action.setEnabled(idle and writable)
         for action in (

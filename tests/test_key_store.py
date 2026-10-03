@@ -10,11 +10,15 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from issue_license import LicenseIssueError
 from license_admin.key_store import (
+    PRIVATE_KEY_FILENAME,
     MAX_KEY_FILE_BYTES,
     KeyPasswordRequiredError,
     import_key_pair,
     inspect_key_pair,
+    load_private_key_file,
+    migrate_legacy_private_key,
 )
+from license_admin.secret_protection import is_protected_secret, unprotect_secret
 from workspace_temp import workspace_temp_dir
 
 
@@ -50,6 +54,11 @@ def write_key_pair(
 
 
 class KeyStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        acl = patch("license_admin.key_store.restrict_to_current_user")
+        acl.start()
+        self.addCleanup(acl.stop)
+
     def test_oversized_key_file_is_rejected_before_parsing(self) -> None:
         with workspace_temp_dir() as directory:
             root = Path(directory)
@@ -71,12 +80,15 @@ class KeyStoreTests(unittest.TestCase):
                 root / "projects" / "alpha",
             )
 
-            self.assertEqual(imported.private_key_path.name, "private.pem")
+            self.assertEqual(imported.private_key_path.name, PRIVATE_KEY_FILENAME)
             self.assertEqual(imported.public_key_path.name, "public.pem")
-            self.assertEqual(imported.private_key_path.read_bytes(), private_path.read_bytes())
+            stored_private = imported.private_key_path.read_bytes()
+            self.assertEqual(is_protected_secret(stored_private), os.name == "nt")
+            self.assertEqual(unprotect_secret(stored_private), private_path.read_bytes())
             self.assertEqual(imported.public_key_path.read_bytes(), public_path.read_bytes())
             self.assertEqual(imported.info.key_size, 2_048)
             self.assertEqual(len(imported.info.fingerprint), 64)
+            self.assertEqual(imported.info.private_key_os_protected, os.name == "nt")
 
     def test_mismatched_pair_is_rejected_without_creating_project_files(self) -> None:
         with workspace_temp_dir() as directory:
@@ -88,7 +100,7 @@ class KeyStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(LicenseIssueError, "matching pair"):
                 import_key_pair(private_path, other_public, destination)
 
-            self.assertFalse((destination / "private.pem").exists())
+            self.assertFalse((destination / PRIVATE_KEY_FILENAME).exists())
             self.assertFalse((destination / "public.pem").exists())
 
     def test_encrypted_private_key_requires_and_accepts_password(self) -> None:
@@ -174,6 +186,22 @@ class KeyStoreTests(unittest.TestCase):
                 alpha.public_key_path.read_bytes(),
                 beta.public_key_path.read_bytes(),
             )
+
+    def test_legacy_plaintext_private_key_is_migrated_and_removed(self) -> None:
+        with workspace_temp_dir() as directory:
+            root = Path(directory)
+            legacy_private, _public = write_key_pair(root, "legacy")
+            destination = root / PRIVATE_KEY_FILENAME
+
+            migrated = migrate_legacy_private_key(legacy_private, destination)
+
+            self.assertTrue(migrated)
+            self.assertFalse(legacy_private.exists())
+            self.assertEqual(
+                is_protected_secret(destination.read_bytes()),
+                os.name == "nt",
+            )
+            self.assertEqual(load_private_key_file(destination).key_size, 2_048)
 
 
 if __name__ == "__main__":

@@ -168,6 +168,7 @@ class SettingsDialog(QDialog):
         self.setObjectName("settingsDialog")
         self._project_directory = project_directory
         self._record_count = record_count
+        self._initial_settings = values
         self._transaction = SettingsTransaction(project_directory)
         self._validated_key_paths: tuple[Path, Path] | None = None
         self.setWindowTitle(text("settings.title"))
@@ -342,6 +343,8 @@ class SettingsDialog(QDialog):
                 record_count=self._record_count,
                 install_directory=self._transaction.key_staging_directory,
                 display_directory=self._transaction.asset_directory,
+                current_private_key_path=self._initial_settings.signing_key_path,
+                current_public_key_path=self._initial_settings.public_key_path,
             )
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("key.import_failed"), str(exc))

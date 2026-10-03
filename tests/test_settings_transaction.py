@@ -61,6 +61,16 @@ def _write_service_account(path: Path, email: str) -> Path:
 
 
 class SettingsTransactionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patches = (
+            patch("license_admin.key_store.restrict_to_current_user"),
+            patch("license_admin.settings_transaction.restrict_to_current_user"),
+            patch("license_admin.service_account_store.restrict_to_current_user"),
+        )
+        for acl in patches:
+            acl.start()
+            self.addCleanup(acl.stop)
+
     def _configured_project(
         self,
         root: Path,
