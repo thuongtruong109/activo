@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
+import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -61,7 +63,14 @@ from license_admin.domain import (
     serialize_signed_csv,
     validate_record_signatures,
 )
-from license_admin.google_sheets import GoogleSheetsClient, download_public_records
+from license_admin.google_sheets import (
+    GoogleSheetsClient,
+    GoogleSheetsConfig,
+    RemoteRevision,
+    RemoteSnapshot,
+    SheetConflictError,
+    download_public_records,
+)
 from license_admin.flag_icons import FlagIconLoader
 from license_admin.icons import svg_icon
 from license_admin.information_dialogs import (
@@ -83,12 +92,21 @@ from license_admin.project_config import (
     export_project_config,
     import_project_config,
 )
+from license_admin.project_lock import ProjectLease, ProjectLockError
 from license_admin.project_selector import ProjectSelector
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.record_transaction import RecordTransaction
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
-from license_admin.settings import AdminSettings, ProjectStore
+from license_admin.settings import AdminSettings, ProjectStore, normalize_project_id
 from license_admin.storage import LicenseRepository
+from license_admin.sync_models import (
+    LocalSyncContext,
+    SyncDiff,
+    SyncDirection,
+    SyncTarget,
+    SyncTargetKind,
+    build_sync_diff,
+)
 from license_admin.toast import Toast
 from license_admin.theme import apply_theme
 from license_admin.theme_toggle import ThemeToggle
@@ -123,17 +141,35 @@ class LicenseAdminWindow(QMainWindow):
             str(self._qsettings.value("ui/theme", "dark"))
         )
         self._project_store = project_store or ProjectStore()
-        default_profile = self._project_store.ensure_default()
+        catalog_lease = ProjectLease.acquire(self._project_store.root)
+        try:
+            default_profile = self._project_store.ensure_default()
+        finally:
+            catalog_lease.release()
         active_project = str(
             self._qsettings.value("projects/active", default_profile.project_id)
         ).strip()
         try:
-            self._settings = self._project_store.load(active_project)
+            active_project = normalize_project_id(active_project)
         except LicenseIssueError:
-            self._settings = default_profile
+            active_project = default_profile.project_id
+        try:
+            self._settings, self._project_lease = self._acquire_project_state(
+                active_project
+            )
+        except ProjectLockError:
+            raise
+        except LicenseIssueError:
+            if active_project == default_profile.project_id:
+                raise
+            self._settings, self._project_lease = self._acquire_project_state(
+                default_profile.project_id
+            )
         self._qsettings.setValue("projects/active", self._settings.project_id)
         self._workers: set[OperationThread] = set()
         self._busy = False
+        self._operation_continuation: Callable[[], None] | None = None
+        self._local_revision = 0
         self._records: list[LicenseRecord] = []
         self._data_state = ProjectDataState.EMPTY
         self._data_state_detail = ""
@@ -145,6 +181,21 @@ class LicenseAdminWindow(QMainWindow):
         self._create_menus()
         self._load_local(show_missing=False)
         self._refresh_view()
+
+    def _acquire_project_state(
+        self,
+        project_id: str,
+    ) -> tuple[AdminSettings, ProjectLease]:
+        """Acquire the project lease before reading its mutable profile."""
+        lease = ProjectLease.acquire(
+            self._project_store.project_directory(project_id)
+        )
+        try:
+            settings = self._project_store.load(project_id)
+        except Exception:
+            lease.release()
+            raise
+        return settings, lease
 
     def _create_actions(self) -> None:
         self.new_action = QAction(svg_icon("plus"), text("action.new_license"), self)
@@ -819,6 +870,8 @@ class LicenseAdminWindow(QMainWindow):
         self.search_edit.setFocus()
 
     def _create_project(self) -> None:
+        if self._busy:
+            return
         project_name, accepted = QInputDialog.getText(
             self,
             text("project.add_title"),
@@ -826,12 +879,19 @@ class LicenseAdminWindow(QMainWindow):
         )
         if not accepted or not project_name.strip():
             return
+        candidate_lease: ProjectLease | None = None
         try:
-            profile = self._project_store.create(project_name)
+            project_id = normalize_project_id(project_name)
+            candidate_lease = ProjectLease.acquire(
+                self._project_store.project_directory(project_id)
+            )
+            profile = self._project_store.create(project_name, project_id)
         except LicenseIssueError as exc:
+            if candidate_lease is not None:
+                candidate_lease.release()
             QMessageBox.warning(self, text("project.create_failed"), str(exc))
             return
-        self._switch_project(profile.project_id)
+        self._activate_project(profile, candidate_lease)
         self._notify(text("project.created", name=profile.project_name))
         self._show_settings()
 
@@ -839,11 +899,26 @@ class LicenseAdminWindow(QMainWindow):
         if self._busy or project_id == self._settings.project_id:
             return
         try:
-            self._settings = self._project_store.load(project_id)
+            settings, candidate_lease = self._acquire_project_state(
+                project_id
+            )
         except LicenseIssueError as exc:
+            self.project_combo.set_current_data(self._settings.project_id)
             QMessageBox.critical(self, text("project.open_failed"), str(exc))
             return
-        self._qsettings.setValue("projects/active", project_id)
+
+        self._activate_project(settings, candidate_lease)
+
+    def _activate_project(
+        self,
+        settings: AdminSettings,
+        candidate_lease: ProjectLease,
+    ) -> None:
+        previous_lease = self._project_lease
+        self._project_lease = candidate_lease
+        self._settings = settings
+        previous_lease.release()
+        self._qsettings.setValue("projects/active", settings.project_id)
         self.search_edit.clear()
         self.status_combo.set_current_data(None, emit=True)
         self._set_sync_badge("unsynced")
@@ -859,6 +934,8 @@ class LicenseAdminWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
     def _import_project_keys(self) -> None:
+        if self._busy:
+            return
         dialog = KeyImportDialog(
             self,
             project_name=self._settings.project_name,
@@ -892,6 +969,8 @@ class LicenseAdminWindow(QMainWindow):
         )
 
     def _import_google_credentials(self) -> None:
+        if self._busy:
+            return
         dialog = ServiceAccountImportDialog(
             self,
             project_name=self._settings.project_name,
@@ -912,6 +991,8 @@ class LicenseAdminWindow(QMainWindow):
         self._notify(text("project.credential_imported", email=imported.info.client_email))
 
     def _import_project_config(self) -> None:
+        if self._busy:
+            return
         filename, _ = QFileDialog.getOpenFileName(
             self,
             text("config.import_title"),
@@ -979,10 +1060,12 @@ class LicenseAdminWindow(QMainWindow):
     def _load_local(self, *, show_missing: bool) -> None:
         result = load_project_records(self._settings)
         self._records = list(result.records)
+        self._advance_local_revision()
         self._data_state = result.state
         self._data_state_detail = result.detail
         self._update_data_state_banner()
         self._update_action_states()
+        self._refresh_sync_badge_from_baseline()
         if show_missing and not result.state.allows_writes:
             QMessageBox.critical(
                 self,
@@ -991,14 +1074,20 @@ class LicenseAdminWindow(QMainWindow):
             )
 
     def _retry_local_data(self) -> None:
+        if self._busy:
+            return
         self._load_local(show_missing=True)
         self._refresh_view()
 
     def _commit_records(
         self,
         transaction: RecordTransaction,
+        *,
+        allow_busy: bool = False,
     ) -> tuple[LicenseRecord, ...] | None:
         """Persist a candidate snapshot before publishing it to the UI state."""
+        if self._busy and not allow_busy:
+            return None
         if not self._ensure_data_writable():
             return None
         try:
@@ -1009,6 +1098,7 @@ class LicenseAdminWindow(QMainWindow):
             QMessageBox.critical(self, text("data.save_failed"), str(exc))
             return None
         self._records = list(snapshot)
+        self._advance_local_revision()
         self._data_state = (
             ProjectDataState.READY if self._records else ProjectDataState.EMPTY
         )
@@ -1177,6 +1267,8 @@ class LicenseAdminWindow(QMainWindow):
                 return None
 
     def _add_license(self) -> None:
+        if self._busy:
+            return
         if not self._ensure_data_writable():
             return
         dialog = LicenseEditorDialog(self)
@@ -1185,6 +1277,8 @@ class LicenseAdminWindow(QMainWindow):
         self._apply_license_editor(dialog, None)
 
     def _edit_license(self) -> None:
+        if self._busy:
+            return
         if not self._ensure_data_writable():
             return
         record = self._selected_record()
@@ -1200,6 +1294,8 @@ class LicenseAdminWindow(QMainWindow):
         dialog: LicenseEditorDialog,
         original: LicenseRecord | None,
     ) -> None:
+        if self._busy:
+            return
         if not self._ensure_data_writable():
             return
         username, hwid, expires_at = dialog.values()
@@ -1263,6 +1359,8 @@ class LicenseAdminWindow(QMainWindow):
             )
 
     def _revoke_license(self) -> None:
+        if self._busy:
+            return
         if not self._ensure_data_writable():
             return
         record = self._selected_record()
@@ -1287,6 +1385,8 @@ class LicenseAdminWindow(QMainWindow):
             RecordDetailsDialog(self, record).exec()
 
     def _merge_imported(self, imported: list[LicenseRecord], source_name: str) -> bool:
+        if self._busy:
+            return False
         if not self._ensure_data_writable():
             return False
         try:
@@ -1321,6 +1421,8 @@ class LicenseAdminWindow(QMainWindow):
         return False
 
     def _import_signed(self) -> None:
+        if self._busy:
+            return
         if not self._ensure_data_writable():
             return
         filename, _ = QFileDialog.getOpenFileName(
@@ -1336,6 +1438,8 @@ class LicenseAdminWindow(QMainWindow):
         self._merge_imported(imported, Path(filename).name)
 
     def _import_legacy(self) -> None:
+        if self._busy:
+            return
         if not self._ensure_data_writable():
             return
         filename, _ = QFileDialog.getOpenFileName(
@@ -1382,46 +1486,370 @@ class LicenseAdminWindow(QMainWindow):
             return
         self._notify(text("export.done", count=len(self._records)))
 
-    def _sheet_client(self) -> GoogleSheetsClient:
-        return GoogleSheetsClient(self._settings.sheets_config())
+    def _sheet_client(
+        self,
+        config: GoogleSheetsConfig | None = None,
+    ) -> GoogleSheetsClient:
+        return GoogleSheetsClient(config or self._settings.sheets_config())
+
+    def _advance_local_revision(self) -> None:
+        self._local_revision += 1
+
+    def _sheet_target(self, config: GoogleSheetsConfig) -> SyncTarget:
+        return SyncTarget(
+            project_id=self._settings.project_id,
+            spreadsheet_id=config.spreadsheet_id,
+            worksheet=config.worksheet,
+            kind=SyncTargetKind.GOOGLE_SHEET,
+        )
+
+    def _public_csv_target(self, url: str) -> SyncTarget:
+        url_hash = hashlib.sha256(url.strip().encode("utf-8")).hexdigest()[:20]
+        return SyncTarget(
+            project_id=self._settings.project_id,
+            spreadsheet_id=f"public-{url_hash}",
+            worksheet="csv",
+            kind=SyncTargetKind.PUBLIC_CSV,
+        )
+
+    def _local_sync_context(self, target: SyncTarget) -> LocalSyncContext:
+        return LocalSyncContext(
+            target=target,
+            revision=self._local_revision,
+            digest=records_digest(self._records),
+        )
+
+    def _sync_context_is_current(self, context: LocalSyncContext) -> bool:
+        if context.target.project_id != self._settings.project_id:
+            return False
+        if context.target.kind is SyncTargetKind.PUBLIC_CSV:
+            target = self._public_csv_target(self._settings.public_csv_url)
+        else:
+            try:
+                target = self._sheet_target(self._settings.sheets_config())
+            except LicenseIssueError:
+                return False
+        return (
+            target == context.target
+            and self._local_revision == context.revision
+            and records_digest(self._records) == context.digest
+        )
+
+    @staticmethod
+    def _revision_document(revision: RemoteRevision | None) -> dict[str, object] | None:
+        if revision is None:
+            return None
+        return {
+            "generation": revision.generation,
+            "digest": revision.digest,
+            "sentinel_sheet_id": revision.sentinel_sheet_id,
+            "target_sheet_id": revision.target_sheet_id,
+            "operation_id": revision.operation_id,
+        }
+
+    def _store_remote_baseline(
+        self,
+        target: SyncTarget,
+        snapshot: RemoteSnapshot,
+    ) -> None:
+        document = {
+            "digest": snapshot.digest,
+            "revision": self._revision_document(snapshot.revision),
+        }
+        self._qsettings.setValue(
+            target.settings_key,
+            json.dumps(document, separators=(",", ":"), sort_keys=True),
+        )
+
+    def _remote_baseline(
+        self,
+        target: SyncTarget,
+    ) -> tuple[str, RemoteRevision | None] | None:
+        raw = str(self._qsettings.value(target.settings_key, ""))
+        if not raw:
+            return None
+        try:
+            document = json.loads(raw)
+            digest = document["digest"]
+            revision_document = document.get("revision")
+            if not isinstance(digest, str):
+                return None
+            if revision_document is None:
+                return digest, None
+            if not isinstance(revision_document, dict):
+                return None
+            revision = RemoteRevision(
+                generation=int(revision_document["generation"]),
+                digest=str(revision_document["digest"]),
+                sentinel_sheet_id=int(revision_document["sentinel_sheet_id"]),
+                target_sheet_id=int(revision_document["target_sheet_id"]),
+                operation_id=str(revision_document.get("operation_id", "")),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return digest, revision
+
+    @staticmethod
+    def _baseline_matches_snapshot(
+        baseline: tuple[str, RemoteRevision | None] | None,
+        snapshot: RemoteSnapshot,
+    ) -> bool:
+        return baseline == (snapshot.digest, snapshot.revision)
+
+    def _observe_remote_preview(
+        self,
+        target: SyncTarget,
+        snapshot: RemoteSnapshot,
+    ) -> tuple[bool, bool]:
+        """Record divergence as soon as a remote preview proves it exists."""
+        baseline = self._remote_baseline(target)
+        baseline_changed = baseline is not None and not (
+            self._baseline_matches_snapshot(baseline, snapshot)
+        )
+        guard_mismatch = not snapshot.guard_matches_data
+        if baseline_changed or guard_mismatch:
+            self._set_sync_badge("dirty")
+        return baseline_changed, guard_mismatch
+
+    def _sync_diff_details(self, diff: SyncDiff) -> str:
+        groups = (
+            ("+", diff.added),
+            ("~", diff.updated),
+            ("−", diff.removed),
+        )
+        lines: list[str] = []
+        for marker, records in groups:
+            for record in records[:12]:
+                identity = record.username or record.hwid
+                lines.append(f"{marker} {identity} — {record.hwid}")
+            if len(records) > 12:
+                lines.append(f"{marker} … {len(records) - 12} more")
+        return "\n".join(lines) or text("sheet.preview_no_changes")
+
+    def _confirm_sync_preview(
+        self,
+        direction: SyncDirection,
+        diff: SyncDiff,
+        *,
+        first_push: bool = False,
+        baseline_changed: bool = False,
+        guard_mismatch: bool = False,
+    ) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning if diff.removed else QMessageBox.Icon.Question)
+        box.setWindowTitle(
+            text("sheet.push_title")
+            if direction is SyncDirection.PUSH
+            else text("sheet.pull_title")
+        )
+        box.setText(
+            text(
+                "sheet.preview_summary",
+                added=len(diff.added),
+                updated=len(diff.updated),
+                removed=len(diff.removed),
+                unchanged=len(diff.unchanged),
+            )
+        )
+        warnings: list[str] = []
+        if first_push:
+            warnings.append(text("sheet.preview_first_push"))
+        if baseline_changed:
+            warnings.append(text("sheet.preview_remote_changed"))
+        if guard_mismatch:
+            warnings.append(text("sheet.preview_manual_change"))
+        if warnings:
+            box.setInformativeText("\n\n".join(warnings))
+        box.setDetailedText(self._sync_diff_details(diff))
+        confirm = box.addButton(
+            text(
+                "sheet.preview_publish"
+                if direction is SyncDirection.PUSH
+                else "sheet.preview_replace_local"
+            ),
+            (
+                QMessageBox.ButtonRole.DestructiveRole
+                if diff.removed or first_push
+                else QMessageBox.ButtonRole.AcceptRole
+            ),
+        )
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        return box.clickedButton() is confirm
+
+    def _verification_values(self) -> tuple[bytes, str, str]:
+        try:
+            public_key = self._settings.public_key_path.read_bytes()
+        except OSError as exc:
+            raise LicenseIssueError(
+                f"Unable to read public key {self._settings.public_key_path}: {exc}"
+            ) from exc
+        return public_key, self._settings.issuer, self._settings.audience
+
+    @staticmethod
+    def _verify_pulled_records(
+        records: list[LicenseRecord] | tuple[LicenseRecord, ...],
+        verification: tuple[bytes, str, str],
+    ) -> list[LicenseRecord]:
+        public_key, issuer, audience = verification
+        verified = validate_record_signatures(
+            list(records),
+            public_key,
+            expected_issuer=issuer,
+            expected_audience=audience,
+        )
+        invalid_count = sum(record.parse_error is not None for record in verified)
+        if invalid_count:
+            raise LicenseIssueError(
+                f"Google Sheet contains {invalid_count} invalid or untrusted license rows."
+            )
+        return verified
 
     def _pull_sheet(self) -> None:
-        if not self._ensure_data_writable():
+        if self._busy or not self._ensure_data_writable():
             return
-        if self._records:
-            answer = QMessageBox.question(
-                self,
-                text("sheet.pull_title"),
-                text("sheet.pull_body"),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
+        try:
+            verification = self._verification_values()
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("sheet.sync_failed"), str(exc))
+            return
+        public_url = self._settings.public_csv_url.strip()
+        config: GoogleSheetsConfig | None = None
+        if public_url:
+            target = self._public_csv_target(public_url)
+        else:
+            try:
+                config = self._settings.sheets_config()
+            except LicenseIssueError as exc:
+                QMessageBox.warning(self, text("sheet.not_configured"), str(exc))
                 return
+            target = self._sheet_target(config)
+        context = self._local_sync_context(target)
+        local_snapshot = tuple(self._records)
 
-        def operation() -> list[LicenseRecord]:
-            if self._settings.public_csv_url:
-                records = download_public_records(self._settings.public_csv_url)
-            else:
-                records = self._sheet_client().read_records()
-            return self._verified_records(records)
-
-        def complete(records: Any) -> None:
-            if not isinstance(records, list):
-                raise RuntimeError("Unexpected Sheet result.")
-            transaction = RecordTransaction.from_records(records)
-            committed = self._commit_records(transaction)
-            if committed is not None:
-                committed_records = list(committed)
-                self._set_remote_digest(committed_records)
-                self._mark_synced(
-                    text("sheet.pulled", count=len(committed_records))
+        def operation() -> RemoteSnapshot | tuple[list[LicenseRecord], str]:
+            if public_url:
+                records = self._verify_pulled_records(
+                    download_public_records(public_url), verification
                 )
+                return records, records_digest(records)
+            assert config is not None
+            remote = self._sheet_client(config).read_snapshot()
+            verified = self._verify_pulled_records(remote.records, verification)
+            return replace(remote, records=tuple(verified))
+
+        def complete(result: Any) -> None:
+            if not self._sync_context_is_current(context):
+                self._set_sync_badge("dirty")
+                self._notify(text("sheet.local_changed"), tone="info")
+                return
+            if isinstance(result, RemoteSnapshot):
+                remote = result
+                remote_records = remote.records
+                baseline_changed, guard_mismatch = self._observe_remote_preview(
+                    target, remote
+                )
+            else:
+                records, _digest = result
+                remote = None
+                remote_records = tuple(records)
+                baseline_changed = False
+                guard_mismatch = False
+            diff = build_sync_diff(remote_records, local_snapshot)
+            if not self._confirm_sync_preview(
+                SyncDirection.PULL,
+                diff,
+                baseline_changed=baseline_changed,
+                guard_mismatch=guard_mismatch,
+            ):
+                return
+            self._queue_after_operation(
+                lambda: self._apply_pull_preview(
+                    context=context,
+                    reviewed=remote,
+                    reviewed_public=(
+                        (list(remote_records), records_digest(remote_records))
+                        if remote is None
+                        else None
+                    ),
+                    config=config,
+                    public_url=public_url,
+                    verification=verification,
+                )
+            )
 
         self._run_operation(text("sheet.pulling"), operation, complete)
 
-    def _push_sheet(self, *, force: bool = False) -> None:
-        if not self._ensure_data_writable():
+    def _apply_pull_preview(
+        self,
+        *,
+        context: LocalSyncContext,
+        reviewed: RemoteSnapshot | None,
+        reviewed_public: tuple[list[LicenseRecord], str] | None,
+        config: GoogleSheetsConfig | None,
+        public_url: str,
+        verification: tuple[bytes, str, str],
+    ) -> None:
+        if not self._sync_context_is_current(context):
+            self._set_sync_badge("dirty")
+            return
+        self._set_sync_badge("dirty")
+
+        def operation() -> RemoteSnapshot | tuple[list[LicenseRecord], str]:
+            if public_url:
+                records = self._verify_pulled_records(
+                    download_public_records(public_url), verification
+                )
+                digest = records_digest(records)
+                if reviewed_public is None or digest != reviewed_public[1]:
+                    raise SheetConflictError(
+                        "The public CSV changed after the sync preview."
+                    )
+                return records, digest
+            if config is None or reviewed is None:
+                raise RuntimeError("Missing authenticated Sheet preview.")
+            current = self._sheet_client(config).read_snapshot()
+            if (
+                current.digest != reviewed.digest
+                or current.revision != reviewed.revision
+            ):
+                raise SheetConflictError(
+                    "The Google Sheet changed after the sync preview."
+                )
+            verified = self._verify_pulled_records(current.records, verification)
+            return replace(current, records=tuple(verified))
+
+        def complete(result: Any) -> None:
+            if not self._sync_context_is_current(context):
+                self._set_sync_badge("dirty")
+                self._notify(text("sheet.local_changed"), tone="info")
+                return
+            if isinstance(result, RemoteSnapshot):
+                records = list(result.records)
+            else:
+                records = list(result[0])
+            transaction = RecordTransaction.sorted_records(records)
+            committed = self._commit_records(transaction, allow_busy=True)
+            if committed is None:
+                return
+            if isinstance(result, RemoteSnapshot):
+                self._store_remote_baseline(context.target, result)
+                if result.revision is not None and result.guard_matches_data:
+                    self._mark_synced(text("sheet.pulled", count=len(committed)))
+                else:
+                    self._set_sync_badge("dirty")
+                    self._notify(
+                        text("sheet.pulled_unversioned", count=len(committed)),
+                        tone="info",
+                    )
+            else:
+                self._set_sync_badge("dirty")
+                self._notify(text("sheet.pulled_public", count=len(committed)))
+
+        self._run_operation(text("sheet.pulling"), operation, complete)
+
+    def _push_sheet(self) -> None:
+        if self._busy or not self._ensure_data_writable():
             return
         invalid_count = sum(
             record.status() is LicenseStatus.INVALID for record in self._records
@@ -1434,12 +1862,12 @@ class LicenseAdminWindow(QMainWindow):
             )
             return
         try:
-            self._settings.sheets_config()
+            config = self._settings.sheets_config()
         except LicenseIssueError as exc:
             QMessageBox.warning(self, text("sheet.not_configured"), str(exc))
             self._show_settings()
             return
-        if self._settings.service_account_path is None:
+        if config.credentials_path is None:
             QMessageBox.warning(
                 self,
                 text("sheet.credentials_missing"),
@@ -1447,52 +1875,78 @@ class LicenseAdminWindow(QMainWindow):
             )
             self._show_settings()
             return
-        if not force:
-            answer = QMessageBox.question(
-                self,
-                text("sheet.push_title"),
-                text(
-                    "sheet.push_body",
-                    count=len(self._records),
-                    worksheet=self._settings.worksheet,
-                ),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel,
+        target = self._sheet_target(config)
+        context = self._local_sync_context(target)
+        local_snapshot = tuple(self._records)
+
+        def operation() -> RemoteSnapshot:
+            return self._sheet_client(config).read_snapshot()
+
+        def complete(remote: Any) -> None:
+            if not isinstance(remote, RemoteSnapshot):
+                raise RuntimeError("Unexpected Sheet preview result.")
+            if not self._sync_context_is_current(context):
+                self._set_sync_badge("dirty")
+                return
+            baseline = self._remote_baseline(target)
+            first_push = baseline is None and bool(remote.records)
+            baseline_changed, guard_mismatch = self._observe_remote_preview(
+                target, remote
             )
-            if answer != QMessageBox.StandardButton.Yes:
+            diff = build_sync_diff(local_snapshot, remote.records)
+            if not self._confirm_sync_preview(
+                SyncDirection.PUSH,
+                diff,
+                first_push=first_push,
+                baseline_changed=baseline_changed,
+                guard_mismatch=guard_mismatch,
+            ):
                 return
-        snapshot = list(self._records)
-        expected_digest = self._remote_digest()
-
-        def operation() -> tuple[str, str]:
-            client = self._sheet_client()
-            current = client.read_records()
-            current_digest = records_digest(current)
-            if not force and expected_digest and current_digest != expected_digest:
-                return "conflict", current_digest
-            client.replace_records(snapshot, existing_records=current)
-            return "ok", records_digest(snapshot)
-
-        def complete(result: Any) -> None:
-            status, digest = result
-            if status == "conflict":
-                answer = QMessageBox.warning(
-                    self,
-                    text("sheet.conflict_title"),
-                    text("sheet.conflict_body"),
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                    QMessageBox.StandardButton.Cancel,
+            self._queue_after_operation(
+                lambda: self._publish_push_preview(
+                    context=context,
+                    records=local_snapshot,
+                    reviewed=remote,
+                    config=config,
                 )
-                if answer == QMessageBox.StandardButton.Yes:
-                    self._push_sheet(force=True)
-                return
-            self._qsettings.setValue(self._digest_key(), digest)
-            self._mark_synced(text("sheet.synced", count=len(snapshot)))
+            )
+
+        self._run_operation(text("sheet.checking"), operation, complete)
+
+    def _publish_push_preview(
+        self,
+        *,
+        context: LocalSyncContext,
+        records: tuple[LicenseRecord, ...],
+        reviewed: RemoteSnapshot,
+        config: GoogleSheetsConfig,
+    ) -> None:
+        if not self._sync_context_is_current(context):
+            self._set_sync_badge("dirty")
+            return
+        self._set_sync_badge("dirty")
+
+        def operation() -> RemoteSnapshot:
+            return self._sheet_client(config).publish_records(
+                records,
+                expected_revision=reviewed.revision,
+                expected_digest=reviewed.digest,
+            )
+
+        def complete(remote: Any) -> None:
+            if not isinstance(remote, RemoteSnapshot):
+                raise RuntimeError("Unexpected Sheet publish result.")
+            self._store_remote_baseline(context.target, remote)
+            if self._sync_context_is_current(context):
+                self._mark_synced(text("sheet.synced", count=len(records)))
+            else:
+                self._set_sync_badge("dirty")
+                self._notify(text("sheet.local_changed"), tone="info")
 
         self._run_operation(text("sheet.syncing"), operation, complete)
 
     def _format_sheet(self) -> None:
-        if not self._ensure_data_writable():
+        if self._busy or not self._ensure_data_writable():
             return
         try:
             client = self._sheet_client()
@@ -1526,6 +1980,8 @@ class LicenseAdminWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl(url))
 
     def _show_settings(self) -> None:
+        if self._busy:
+            return
         dialog = SettingsDialog(
             self,
             self._settings,
@@ -1575,12 +2031,24 @@ class LicenseAdminWindow(QMainWindow):
         def finished() -> None:
             self._workers.discard(worker)
             worker.deleteLater()
+            continuation = self._operation_continuation
+            self._operation_continuation = None
             self._set_busy(False, text("message.ready"))
+            if continuation is not None:
+                continuation()
 
         worker.succeeded.connect(succeeded)
         worker.failed.connect(failed)
         worker.finished.connect(finished)
         worker.start()
+
+    def _queue_after_operation(self, continuation: Callable[[], None]) -> None:
+        if not self._busy:
+            continuation()
+            return
+        if self._operation_continuation is not None:
+            raise RuntimeError("A follow-up operation is already queued.")
+        self._operation_continuation = continuation
 
     def _set_busy(self, busy: bool, _message: str) -> None:
         self._busy = busy
@@ -1623,20 +2091,28 @@ class LicenseAdminWindow(QMainWindow):
             self.project_combo.setEnabled(idle)
             self.primary_action_button.setEnabled(idle and writable)
             self.new_sidebar_button.setEnabled(idle and writable)
+            self.settings_sidebar_button.setEnabled(idle)
+            self.project_sidebar_menu.setEnabled(idle)
             self.data_state_banner.retry_button.setEnabled(idle)
             self.data_state_banner.open_folder_button.setEnabled(idle)
 
-    def _digest_key(self) -> str:
-        return (
-            f"sync/{self._settings.project_id}/{self._settings.spreadsheet_id}/"
-            f"{self._settings.worksheet}/digest"
-        )
-
-    def _remote_digest(self) -> str:
-        return str(self._qsettings.value(self._digest_key(), ""))
-
-    def _set_remote_digest(self, records: list[LicenseRecord]) -> None:
-        self._qsettings.setValue(self._digest_key(), records_digest(records))
+    def _refresh_sync_badge_from_baseline(self) -> None:
+        try:
+            target = self._sheet_target(self._settings.sheets_config())
+        except LicenseIssueError:
+            self._set_sync_badge("unsynced")
+            return
+        baseline = self._remote_baseline(target)
+        if baseline is None:
+            self._set_sync_badge("unsynced")
+        elif (
+            baseline[1] is not None
+            and baseline[1].digest == baseline[0]
+            and baseline[0] == records_digest(self._records)
+        ):
+            self._set_sync_badge("synced")
+        else:
+            self._set_sync_badge("dirty")
 
     def _mark_synced(self, message: str) -> None:
         self._set_sync_badge("synced")
@@ -1659,4 +2135,5 @@ class LicenseAdminWindow(QMainWindow):
             )
             event.ignore()
             return
+        self._project_lease.release()
         event.accept()

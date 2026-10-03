@@ -5,8 +5,9 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtCore import QCoreApplication
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
+from issue_license import LicenseIssueError
 from license_admin.app_identity import (
     configure_application_identity,
     configure_process_identity,
@@ -24,7 +25,11 @@ def main() -> int:
     configure_application_identity(app)
     app.setStyle("Fusion")
     app.setStyleSheet(ADMIN_STYLESHEET)
-    window = LicenseAdminWindow()
+    try:
+        window = LicenseAdminWindow()
+    except LicenseIssueError as exc:
+        QMessageBox.critical(None, "Unable to open License Admin", str(exc))
+        return 1
     window.show()
     return app.exec()
 

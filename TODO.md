@@ -1,24 +1,3 @@
-### 4. Đồng bộ Google Sheets có race condition và overwrite risk
-
-Hiện có các rủi ro:
-
-- Không có single-instance lock; hai tiến trình có thể ghi cùng project.
-- Một số import action vẫn hoạt động trong lúc sync.
-- Worker có thể push snapshot cũ, trong khi local state đã thay đổi, rồi đánh dấu `Synced`.
-- Lần push đầu tiên không có baseline digest có thể ghi đè Sheet đã tồn tại tại [main_window.py](D:/Projects/activo/license_admin/main_window.py:1342).
-- Remote update thực hiện theo kiểu ghi rồi clear tại [google_sheets.py](D:/Projects/activo/license_admin/google_sheets.py:189), nên failure giữa chừng có thể để Sheet ở trạng thái không đầy đủ.
-
-Cần:
-
-- Single-instance lock cho mỗi project.
-- Local revision monotonic.
-- Compare-and-swap với remote revision.
-- Preview diff trước push/pull.
-- Push vào worksheet tạm rồi swap/rename.
-- Read-back verify sau push.
-- Không đánh dấu synced nếu local revision đã thay đổi trong lúc worker chạy.
-- Disable tất cả mutation xung đột khi sync.
-
 ### 5. Private key chưa được bảo vệ đúng trên Windows
 
 Project được lưu cạnh executable tại [settings.py](D:/Projects/activo/license_admin/settings.py:19), không phải vị trí phù hợp cho dữ liệu mutable và secret.

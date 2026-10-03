@@ -110,7 +110,11 @@ không nên thêm liên kết mã nguồn giữa License Manager với ứng d�
 - Xem, tìm kiếm, lọc, sắp xếp và kiểm tra chữ ký toàn bộ license.
 - Tạo, gia hạn, sửa và thu hồi license.
 - Nhập signed CSV, chuyển đổi legacy CSV và xuất signed CSV.
-- Tải/đồng bộ Google Sheet, phát hiện xung đột và format worksheet.
+- Tải/đồng bộ Google Sheet với diff preview, local revision đơn điệu, staged
+  publish nguyên tử, revision CAS giữa các License Manager tương thích và
+  read-back verification trước khi báo `Synced`.
+- Khóa một tiến trình ghi cho mỗi project; mọi mutation xung đột bị vô hiệu hóa
+  trong lúc worker đồng bộ đang chạy.
 - Hỗ trợ private key PEM có mật khẩu; mật khẩu không được lưu.
 - Nhập và xác minh cặp RSA key riêng cho từng project, có chống ghi đè nhầm và
   rollback khi ghi lỗi.
@@ -130,6 +134,11 @@ không nên thêm liên kết mã nguồn giữa License Manager với ứng d�
 `private.pem`, service-account JSON và CSV quản trị đều được `.gitignore`.
 Không commit, gửi, đưa lên Drive hoặc đóng gói những file này. Mỗi sản phẩm nên
 dùng một cặp RSA key, issuer, audience và Google Sheet riêng.
+
+Google Sheets API áp dụng các request trong một `batchUpdate` cùng nhau nhưng
+không cung cấp conditional write cho chỉnh sửa thủ công của collaborator. Vì
+vậy CAS của ứng dụng bảo vệ các writer License Manager tương thích; nên giới hạn
+quyền sửa Sheet và tránh chỉnh trực tiếp worksheet đích trong lúc publish.
 
 ## CLI
 

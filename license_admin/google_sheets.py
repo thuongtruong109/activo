@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import base64
+import csv
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
+import io
 import json
 from pathlib import Path
 import re
+import secrets
 from typing import Any
 from urllib.parse import quote
+from uuid import uuid4
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -19,12 +24,42 @@ from issue_license import LicenseIssueError
 from license_admin.domain import (
     LicenseRecord,
     parse_signed_csv,
+    records_digest,
     serialize_signed_csv,
 )
 from license_admin.service_account_store import load_service_account
 
 
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
+SYNC_SENTINEL_SCHEMA = "activo-sheet-sync-v1"
+SYNC_SENTINEL_COLUMNS = ("schema", "target_sheet_id", "revision", "digest", "operation_id")
+
+
+class SheetConflictError(LicenseIssueError):
+    """The remote generation changed after the user reviewed it."""
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteRevision:
+    generation: int
+    digest: str
+    sentinel_sheet_id: int
+    target_sheet_id: int
+    operation_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteSnapshot:
+    records: tuple[LicenseRecord, ...]
+    digest: str
+    revision: RemoteRevision | None
+    target_sheet_id: int
+    target_row_count: int
+    target_column_count: int = 2
+
+    @property
+    def guard_matches_data(self) -> bool:
+        return self.revision is None or self.revision.digest == self.digest
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,63 +203,476 @@ class GoogleSheetsClient:
             f"{self.config.spreadsheet_id}/values/{encoded_range}"
         )
 
-    def read_records(self) -> list[LicenseRecord]:
-        cell_range = f"'{self.config.worksheet}'!A:B"
-        payload = self._request("GET", self._values_url(cell_range))
-        rows = payload.get("values", []) if isinstance(payload, dict) else []
-        if not isinstance(rows, list):
-            raise LicenseIssueError("Google Sheets returned invalid row data.")
-        csv_rows: list[list[str]] = []
-        for row in rows:
-            if not isinstance(row, list):
-                raise LicenseIssueError("Google Sheets returned an invalid row.")
-            csv_rows.append([str(value) for value in row[:2]])
-        import io
-        import csv
-
-        output = io.StringIO(newline="")
-        csv.writer(output, lineterminator="\n").writerows(csv_rows)
-        return parse_signed_csv(output.getvalue())
-
-    def replace_records(
-        self,
-        records: list[LicenseRecord],
-        *,
-        existing_records: list[LicenseRecord] | None = None,
-    ) -> None:
-        current = self.read_records() if existing_records is None else existing_records
-        ordered = sorted(records, key=lambda item: (item.username.casefold(), item.hwid))
-        values = [["hwid", "token"]] + [[item.hwid, item.token] for item in ordered]
-        start_range = f"'{self.config.worksheet}'!A1:B{len(values)}"
-        self._request(
-            "PUT",
-            self._values_url(start_range),
-            params={"valueInputOption": "RAW"},
-            json={"range": start_range, "majorDimension": "ROWS", "values": values},
-        )
-        old_row_count = len(current) + 1
-        if old_row_count > len(values):
-            trailing_range = (
-                f"'{self.config.worksheet}'!A{len(values) + 1}:B{old_row_count}"
-            )
-            self._request("POST", f"{self._values_url(trailing_range)}:clear", json={})
-
-    def _worksheet_properties(self) -> tuple[int, int]:
-        url = (
+    @property
+    def _spreadsheet_url(self) -> str:
+        return (
             "https://sheets.googleapis.com/v4/spreadsheets/"
             f"{self.config.spreadsheet_id}"
         )
+
+    @staticmethod
+    def _quoted_title(title: str) -> str:
+        return f"'{title.replace(chr(39), chr(39) * 2)}'"
+
+    def _sentinel_title(self) -> str:
+        target_hash = hashlib.sha256(
+            self.config.worksheet.encode("utf-8")
+        ).hexdigest()[:16]
+        return f"__activo_sync_{target_hash}"
+
+    def _sheet_properties(self) -> dict[str, tuple[int, int, int, bool]]:
         payload = self._request(
             "GET",
-            url,
-            params={"fields": "sheets.properties(sheetId,title,gridProperties.rowCount)"},
-        )
-        for sheet in payload.get("sheets", []):
-            properties = sheet.get("properties", {})
-            if properties.get("title") == self.config.worksheet:
-                return int(properties["sheetId"]), int(
-                    properties.get("gridProperties", {}).get("rowCount", 1_000)
+            self._spreadsheet_url,
+            params={
+                "fields": (
+                    "sheets.properties("
+                    "sheetId,title,hidden,gridProperties(rowCount,columnCount))"
                 )
+            },
+        )
+        sheets = payload.get("sheets", []) if isinstance(payload, dict) else []
+        result: dict[str, tuple[int, int, int, bool]] = {}
+        for sheet in sheets:
+            properties = sheet.get("properties", {}) if isinstance(sheet, dict) else {}
+            title = properties.get("title")
+            sheet_id = properties.get("sheetId")
+            if not isinstance(title, str) or isinstance(sheet_id, bool) or not isinstance(
+                sheet_id, int
+            ):
+                continue
+            grid = properties.get("gridProperties", {})
+            row_count = grid.get("rowCount", 1_000) if isinstance(grid, dict) else 1_000
+            column_count = (
+                grid.get("columnCount", 26) if isinstance(grid, dict) else 26
+            )
+            result[title] = (
+                sheet_id,
+                int(row_count),
+                int(column_count),
+                bool(properties.get("hidden", False)),
+            )
+        return result
+
+    def _read_rows(self, title: str, cell_range: str = "A:B") -> list[list[str]]:
+        a1_range = f"{self._quoted_title(title)}!{cell_range}"
+        payload = self._request("GET", self._values_url(a1_range))
+        rows = payload.get("values", []) if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            raise LicenseIssueError("Google Sheets returned invalid row data.")
+        normalized: list[list[str]] = []
+        for row in rows:
+            if not isinstance(row, list):
+                raise LicenseIssueError("Google Sheets returned an invalid row.")
+            normalized.append([str(value) for value in row])
+        return normalized
+
+    def _read_records_from_title(self, title: str) -> list[LicenseRecord]:
+        output = io.StringIO(newline="")
+        csv.writer(output, lineterminator="\n").writerows(
+            [row[:2] for row in self._read_rows(title)]
+        )
+        return parse_signed_csv(output.getvalue())
+
+    def read_records(self) -> list[LicenseRecord]:
+        return self._read_records_from_title(self.config.worksheet)
+
+    def _read_remote_revision(
+        self,
+        properties: dict[str, tuple[int, int, int, bool]],
+        target_sheet_id: int,
+    ) -> RemoteRevision | None:
+        sentinel = properties.get(self._sentinel_title())
+        if sentinel is None:
+            return None
+        sentinel_sheet_id, _row_count, _column_count, _hidden = sentinel
+        rows = self._read_rows(self._sentinel_title(), "A1:E2")
+        if len(rows) != 2 or tuple(rows[0]) != SYNC_SENTINEL_COLUMNS:
+            raise LicenseIssueError("The Activo Sheet sync revision is corrupted.")
+        values = rows[1]
+        if len(values) != len(SYNC_SENTINEL_COLUMNS):
+            raise LicenseIssueError("The Activo Sheet sync revision is incomplete.")
+        schema, raw_target_id, raw_generation, digest, operation_id = values
+        try:
+            stored_target_id = int(raw_target_id)
+            generation = int(raw_generation)
+        except ValueError as exc:
+            raise LicenseIssueError(
+                "The Activo Sheet sync revision contains invalid numbers."
+            ) from exc
+        if (
+            schema != SYNC_SENTINEL_SCHEMA
+            or stored_target_id != target_sheet_id
+            or generation < 1
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise LicenseIssueError("The Activo Sheet sync revision is invalid.")
+        return RemoteRevision(
+            generation=generation,
+            digest=digest,
+            sentinel_sheet_id=sentinel_sheet_id,
+            target_sheet_id=target_sheet_id,
+            operation_id=operation_id,
+        )
+
+    def read_snapshot(self) -> RemoteSnapshot:
+        properties = self._sheet_properties()
+        target = properties.get(self.config.worksheet)
+        if target is None:
+            raise LicenseIssueError(
+                f"Worksheet {self.config.worksheet!r} does not exist."
+            )
+        target_sheet_id, target_row_count, target_column_count, _hidden = target
+        records = tuple(self.read_records())
+        digest = records_digest(records)
+        revision = self._read_remote_revision(properties, target_sheet_id)
+        return RemoteSnapshot(
+            records=records,
+            digest=digest,
+            revision=revision,
+            target_sheet_id=target_sheet_id,
+            target_row_count=target_row_count,
+            target_column_count=target_column_count,
+        )
+
+    @staticmethod
+    def _same_revision(
+        current: RemoteRevision | None,
+        expected: RemoteRevision | None,
+    ) -> bool:
+        return current == expected
+
+    def _assert_expected_snapshot(
+        self,
+        snapshot: RemoteSnapshot,
+        expected_revision: RemoteRevision | None,
+        expected_digest: str,
+    ) -> None:
+        if (
+            snapshot.digest != expected_digest
+            or not self._same_revision(snapshot.revision, expected_revision)
+        ):
+            raise SheetConflictError(
+                "The Google Sheet changed after the sync preview. Review the diff again."
+            )
+
+    @staticmethod
+    def _new_sheet_id(used_ids: set[int]) -> int:
+        while True:
+            candidate = secrets.randbelow(2_000_000_000) + 1
+            if candidate not in used_ids:
+                used_ids.add(candidate)
+                return candidate
+
+    def _batch_update(self, requests_payload: list[dict[str, Any]]) -> Any:
+        return self._request(
+            "POST",
+            f"{self._spreadsheet_url}:batchUpdate",
+            json={"requests": requests_payload},
+        )
+
+    def _create_stage(self, sheet_id: int, title: str, row_count: int) -> None:
+        self._batch_update(
+            [
+                {
+                    "addSheet": {
+                        "properties": {
+                            "sheetId": sheet_id,
+                            "title": title,
+                            "hidden": True,
+                            "gridProperties": {
+                                "rowCount": max(2, row_count),
+                                "columnCount": 2,
+                            },
+                        }
+                    }
+                }
+            ]
+        )
+
+    def _delete_sheet(self, sheet_id: int) -> None:
+        self._batch_update([{"deleteSheet": {"sheetId": sheet_id}}])
+
+    def _cleanup_stage(self, sheet_id: int, title: str) -> None:
+        """Delete only the exact staging sheet owned by this operation."""
+        try:
+            stage = self._sheet_properties().get(title)
+            if stage is not None and stage[0] == sheet_id:
+                self._delete_sheet(sheet_id)
+        except LicenseIssueError:
+            # Cleanup is best-effort; never mask the publish error that led here.
+            pass
+
+    def _write_records(self, title: str, records: tuple[LicenseRecord, ...]) -> None:
+        values = [["hwid", "token"]] + [
+            [record.hwid, record.token] for record in records
+        ]
+        cell_range = f"{self._quoted_title(title)}!A1:B{len(values)}"
+        self._request(
+            "PUT",
+            self._values_url(cell_range),
+            params={"valueInputOption": "RAW"},
+            json={
+                "range": cell_range,
+                "majorDimension": "ROWS",
+                "values": values,
+            },
+        )
+
+    @staticmethod
+    def _sentinel_rows(
+        target_sheet_id: int,
+        generation: int,
+        digest: str,
+        operation_id: str,
+    ) -> list[dict[str, Any]]:
+        values = (
+            SYNC_SENTINEL_COLUMNS,
+            (
+                SYNC_SENTINEL_SCHEMA,
+                str(target_sheet_id),
+                str(generation),
+                digest,
+                operation_id,
+            ),
+        )
+        return [
+            {
+                "values": [
+                    {"userEnteredValue": {"stringValue": value}} for value in row
+                ]
+            }
+            for row in values
+        ]
+
+    def _publish_batch(
+        self,
+        *,
+        expected: RemoteSnapshot,
+        stage_sheet_id: int,
+        stage_row_count: int,
+        sentinel_sheet_id: int,
+        generation: int,
+        digest: str,
+        operation_id: str,
+    ) -> None:
+        requests_payload: list[dict[str, Any]] = []
+        if expected.revision is not None:
+            requests_payload.append(
+                {"deleteSheet": {"sheetId": expected.revision.sentinel_sheet_id}}
+            )
+        requests_payload.extend(
+            [
+                {
+                    "addSheet": {
+                        "properties": {
+                            "sheetId": sentinel_sheet_id,
+                            "title": self._sentinel_title(),
+                            "hidden": True,
+                            "gridProperties": {"rowCount": 2, "columnCount": 5},
+                        }
+                    }
+                },
+                {
+                    "updateCells": {
+                        "start": {
+                            "sheetId": sentinel_sheet_id,
+                            "rowIndex": 0,
+                            "columnIndex": 0,
+                        },
+                        "rows": self._sentinel_rows(
+                            expected.target_sheet_id,
+                            generation,
+                            digest,
+                            operation_id,
+                        ),
+                        "fields": "userEnteredValue",
+                    }
+                },
+            ]
+        )
+        if (
+            expected.target_row_count < stage_row_count
+            or expected.target_column_count < 2
+        ):
+            requests_payload.append(
+                {
+                    "updateSheetProperties": {
+                        "properties": {
+                            "sheetId": expected.target_sheet_id,
+                            "gridProperties": {
+                                "rowCount": max(
+                                    expected.target_row_count, stage_row_count
+                                ),
+                                "columnCount": max(
+                                    expected.target_column_count, 2
+                                ),
+                            },
+                        },
+                        "fields": (
+                            "gridProperties.rowCount,"
+                            "gridProperties.columnCount"
+                        ),
+                    }
+                }
+            )
+        requests_payload.extend(
+            [
+                {
+                    "updateCells": {
+                        "range": {
+                            "sheetId": expected.target_sheet_id,
+                            "startRowIndex": 0,
+                            "endRowIndex": max(expected.target_row_count, stage_row_count),
+                            "startColumnIndex": 0,
+                            "endColumnIndex": 2,
+                        },
+                        "rows": [],
+                        "fields": "userEnteredValue",
+                    }
+                },
+                {
+                    "copyPaste": {
+                        "source": {
+                            "sheetId": stage_sheet_id,
+                            "startRowIndex": 0,
+                            "endRowIndex": stage_row_count,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": 2,
+                        },
+                        "destination": {
+                            "sheetId": expected.target_sheet_id,
+                            "startRowIndex": 0,
+                            "endRowIndex": stage_row_count,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": 2,
+                        },
+                        "pasteType": "PASTE_VALUES",
+                        "pasteOrientation": "NORMAL",
+                    }
+                },
+                {"deleteSheet": {"sheetId": stage_sheet_id}},
+            ]
+        )
+        self._batch_update(requests_payload)
+
+    @staticmethod
+    def _is_verified_publish(
+        snapshot: RemoteSnapshot,
+        *,
+        operation_id: str,
+        generation: int,
+        sentinel_sheet_id: int,
+        target_sheet_id: int,
+        digest: str,
+    ) -> bool:
+        revision = snapshot.revision
+        return (
+            revision is not None
+            and revision.operation_id == operation_id
+            and revision.generation == generation
+            and revision.sentinel_sheet_id == sentinel_sheet_id
+            and revision.target_sheet_id == target_sheet_id
+            and snapshot.target_sheet_id == target_sheet_id
+            and snapshot.digest == digest
+            and snapshot.guard_matches_data
+        )
+
+    def publish_records(
+        self,
+        records: list[LicenseRecord] | tuple[LicenseRecord, ...],
+        *,
+        expected_revision: RemoteRevision | None,
+        expected_digest: str,
+    ) -> RemoteSnapshot:
+        """Stage, atomically compare-and-swap, and verify one Sheet snapshot."""
+        ordered = tuple(
+            sorted(records, key=lambda item: (item.username.casefold(), item.hwid))
+        )
+        desired_digest = records_digest(ordered)
+        reviewed = self.read_snapshot()
+        self._assert_expected_snapshot(reviewed, expected_revision, expected_digest)
+
+        properties = self._sheet_properties()
+        used_ids = {
+            sheet_id
+            for sheet_id, _rows, _columns, _hidden in properties.values()
+        }
+        stage_sheet_id = self._new_sheet_id(used_ids)
+        sentinel_sheet_id = self._new_sheet_id(used_ids)
+        operation_id = uuid4().hex
+        stage_title = f"__activo_stage_{operation_id}"
+        stage_cleanup_needed = True
+        try:
+            self._create_stage(stage_sheet_id, stage_title, len(ordered) + 1)
+            self._write_records(stage_title, ordered)
+            staged = tuple(self._read_records_from_title(stage_title))
+            if records_digest(staged) != desired_digest:
+                raise LicenseIssueError(
+                    "Google Sheets staging verification failed; published data was untouched."
+                )
+
+            current = self.read_snapshot()
+            self._assert_expected_snapshot(current, expected_revision, expected_digest)
+            generation = (
+                expected_revision.generation + 1
+                if expected_revision is not None
+                else 1
+            )
+            try:
+                self._publish_batch(
+                    expected=current,
+                    stage_sheet_id=stage_sheet_id,
+                    stage_row_count=len(ordered) + 1,
+                    sentinel_sheet_id=sentinel_sheet_id,
+                    generation=generation,
+                    digest=desired_digest,
+                    operation_id=operation_id,
+                )
+                stage_cleanup_needed = False
+            except LicenseIssueError as publish_error:
+                try:
+                    reconciled = self.read_snapshot()
+                except LicenseIssueError:
+                    raise publish_error
+                if self._is_verified_publish(
+                    reconciled,
+                    operation_id=operation_id,
+                    generation=generation,
+                    sentinel_sheet_id=sentinel_sheet_id,
+                    target_sheet_id=current.target_sheet_id,
+                    digest=desired_digest,
+                ):
+                    stage_cleanup_needed = False
+                    return reconciled
+                if not self._same_revision(reconciled.revision, expected_revision):
+                    raise SheetConflictError(
+                        "Another writer published to the Google Sheet first."
+                    ) from publish_error
+                raise
+
+            verified = self.read_snapshot()
+            if not self._is_verified_publish(
+                verified,
+                operation_id=operation_id,
+                generation=generation,
+                sentinel_sheet_id=sentinel_sheet_id,
+                target_sheet_id=current.target_sheet_id,
+                digest=desired_digest,
+            ):
+                raise LicenseIssueError(
+                    "Google Sheets read-back verification failed; sync was not confirmed."
+                )
+            return verified
+        finally:
+            if stage_cleanup_needed:
+                self._cleanup_stage(stage_sheet_id, stage_title)
+
+    def _worksheet_properties(self) -> tuple[int, int]:
+        properties = self._sheet_properties().get(self.config.worksheet)
+        if properties is not None:
+            sheet_id, row_count, _column_count, _hidden = properties
+            return sheet_id, row_count
         raise LicenseIssueError(
             f"Worksheet {self.config.worksheet!r} does not exist."
         )
@@ -234,7 +682,7 @@ class GoogleSheetsClient:
         grid_range = {"sheetId": sheet_id, "startColumnIndex": 0, "endColumnIndex": 2}
         header_range = dict(grid_range, startRowIndex=0, endRowIndex=1)
         body_range = dict(grid_range, startRowIndex=1, endRowIndex=max(2, row_count))
-        requests_payload = [
+        requests_payload: list[dict[str, Any]] = [
             {
                 "updateSheetProperties": {
                     "properties": {
@@ -311,11 +759,7 @@ class GoogleSheetsClient:
                 }
             },
         ]
-        url = (
-            "https://sheets.googleapis.com/v4/spreadsheets/"
-            f"{self.config.spreadsheet_id}:batchUpdate"
-        )
-        self._request("POST", url, json={"requests": requests_payload})
+        self._batch_update(requests_payload)
 
 
 def download_public_records(url: str) -> list[LicenseRecord]:

@@ -15,9 +15,11 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from PySide6.QtCore import QPoint, QSettings, Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QFrame,
     QHeaderView,
     QMessageBox,
+    QInputDialog,
     QPushButton,
     QToolBar,
     QToolButton,
@@ -38,8 +40,13 @@ from license_admin.dialogs import (
     SettingsDialog,
 )
 from license_admin.data_recovery import ProjectDataState
-from license_admin.domain import LicenseRecord
+from license_admin.domain import LicenseRecord, records_digest
 from license_admin.flag_icons import FLAG_CDN_TEMPLATE, FlagIconLoader
+from license_admin.google_sheets import (
+    GoogleSheetsConfig,
+    RemoteRevision,
+    RemoteSnapshot,
+)
 from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.key_store import import_key_pair
 from license_admin.main_window import LicenseAdminWindow
@@ -53,12 +60,14 @@ from license_admin.information_dialogs import (
 from license_admin.localization import DEFAULT_LANGUAGE, LANGUAGES, set_language
 from license_admin.modal_backdrop import ModalBackdrop
 from license_admin.popover import RoundedMenu
+from license_admin.project_lock import ProjectLease
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.record_transaction import RecordTransaction
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.service_account_store import import_service_account
 from license_admin.settings import ProjectStore
 from license_admin.storage import LicenseRepository
+from license_admin.sync_models import build_sync_diff
 from license_admin.theme import ADMIN_STYLESHEET, stylesheet_for
 from license_admin.ui_metrics import CONTROL_HEIGHT
 from license_admin.window_chrome import DraggableFrame
@@ -652,6 +661,7 @@ class LicenseAdminUiTests(unittest.TestCase):
             window._data_state_detail = "unchanged detail"
             window._set_sync_badge("synced")
             window._refresh_view()
+            revision_before = window._local_revision
             data_path = window._settings.local_csv_path
             existed_before = data_path.exists()
             bytes_before = data_path.read_bytes() if existed_before else None
@@ -686,6 +696,7 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertEqual(window._data_state, ProjectDataState.READY)
             self.assertEqual(window._data_state_detail, "unchanged detail")
             self.assertEqual(window._sync_badge_state, "synced")
+            self.assertEqual(window._local_revision, revision_before)
             self.assertEqual(data_path.exists(), existed_before)
             if existed_before:
                 self.assertEqual(data_path.read_bytes(), bytes_before)
@@ -715,6 +726,7 @@ class LicenseAdminUiTests(unittest.TestCase):
             window._data_state = ProjectDataState.READY
             window._set_sync_badge("synced")
             window._refresh_view()
+            revision_before = window._local_revision
 
             def save(
                 _repository: object,
@@ -742,8 +754,325 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertEqual(window.table_model.records, candidate)
             self.assertEqual(window._data_state, ProjectDataState.READY)
             self.assertEqual(window._sync_badge_state, "dirty")
+            self.assertEqual(window._local_revision, revision_before + 1)
         finally:
             window.close()
+
+    def test_busy_state_disables_every_mutating_entry_point(self) -> None:
+        window = self.create_window()
+        try:
+            window._set_busy(True, "syncing")
+
+            for action in (
+                window.new_action,
+                window.edit_action,
+                window.revoke_action,
+                window.pull_action,
+                window.push_action,
+                window.format_action,
+                window.import_signed_action,
+                window.import_legacy_action,
+                window.import_project_keys_action,
+                window.import_google_credentials_action,
+                window.import_project_config_action,
+                window.settings_action,
+                window.new_project_action,
+            ):
+                self.assertFalse(action.isEnabled())
+            self.assertFalse(window.project_combo.isEnabled())
+            self.assertFalse(window.settings_sidebar_button.isEnabled())
+            self.assertFalse(window.project_sidebar_menu.isEnabled())
+            self.assertFalse(window.table.isEnabled())
+
+            with (
+                patch.object(QInputDialog, "getText") as project_prompt,
+                patch.object(QFileDialog, "getOpenFileName") as file_prompt,
+                patch.object(LicenseEditorDialog, "exec") as editor,
+                patch.object(window, "_run_operation") as run_operation,
+            ):
+                window._create_project()
+                window._import_project_config()
+                window._import_signed()
+                window._import_legacy()
+                window._add_license()
+                window._pull_sheet()
+                window._push_sheet()
+                window._format_sheet()
+
+            project_prompt.assert_not_called()
+            file_prompt.assert_not_called()
+            editor.assert_not_called()
+            run_operation.assert_not_called()
+        finally:
+            window._set_busy(False, "ready")
+            window.close()
+
+    def test_sync_diff_preview_never_exposes_license_tokens(self) -> None:
+        window = self.create_window()
+        try:
+            secret_token = "secret.header.payload.signature"
+            local = LicenseRecord(
+                hwid="preview-hwid",
+                token=secret_token,
+                username="Preview User",
+            )
+            diff = build_sync_diff([local], [])
+
+            details = window._sync_diff_details(diff)
+
+            self.assertIn("Preview User", details)
+            self.assertIn("preview-hwid", details)
+            self.assertNotIn(secret_token, details)
+        finally:
+            window.close()
+
+    def test_second_window_for_same_project_fails_closed(self) -> None:
+        with workspace_temp_dir() as directory:
+            root = Path(directory)
+            store = ProjectStore(root / "projects")
+            store.ensure_default()
+            first_settings = QSettings(
+                str(root / "first.ini"),
+                QSettings.Format.IniFormat,
+            )
+            second_settings = QSettings(
+                str(root / "second.ini"),
+                QSettings.Format.IniFormat,
+            )
+            first = LicenseAdminWindow(
+                project_store=store,
+                qsettings=first_settings,
+            )
+            try:
+                with self.assertRaisesRegex(LicenseIssueError, "already open"):
+                    LicenseAdminWindow(
+                        project_store=store,
+                        qsettings=second_settings,
+                    )
+            finally:
+                first.close()
+
+            replacement = LicenseAdminWindow(
+                project_store=store,
+                qsettings=second_settings,
+            )
+            replacement.close()
+            first_settings.clear()
+            first_settings.sync()
+            second_settings.clear()
+            second_settings.sync()
+
+    def test_stale_push_completion_never_marks_newer_local_state_synced(self) -> None:
+        window = self.create_window()
+        try:
+            config = GoogleSheetsConfig(
+                spreadsheet_id="a" * 30,
+                worksheet="Signed",
+                credentials_path=window._settings.service_account_path,
+            )
+            window._settings = replace(
+                window._settings,
+                spreadsheet_id=config.spreadsheet_id,
+                worksheet=config.worksheet,
+            )
+            target = window._sheet_target(config)
+            context = window._local_sync_context(target)
+            records = tuple(window._records)
+            digest = records_digest(records)
+            remote = RemoteSnapshot(
+                records=records,
+                digest=digest,
+                revision=RemoteRevision(1, digest, 91, 42, "operation"),
+                target_sheet_id=42,
+                target_row_count=1_000,
+            )
+
+            def finish_with_newer_local_revision(
+                _message: str,
+                _operation: object,
+                on_success: object,
+            ) -> None:
+                window._advance_local_revision()
+                on_success(remote)  # type: ignore[operator]
+
+            with (
+                patch.object(
+                    window,
+                    "_run_operation",
+                    side_effect=finish_with_newer_local_revision,
+                ),
+                patch.object(window, "_mark_synced") as mark_synced,
+                patch.object(window, "_notify") as notify,
+            ):
+                window._publish_push_preview(
+                    context=context,
+                    records=records,
+                    reviewed=remote,
+                    config=config,
+                )
+
+            mark_synced.assert_not_called()
+            self.assertEqual(window._sync_badge_state, "dirty")
+            notify.assert_called_once()
+        finally:
+            window.close()
+
+    def test_unchanged_push_still_uses_revision_guarded_publish(self) -> None:
+        window = self.create_window()
+        try:
+            config = GoogleSheetsConfig(
+                spreadsheet_id="a" * 30,
+                worksheet="Signed",
+                credentials_path=Path("service-account.json"),
+            )
+            window._settings = replace(
+                window._settings,
+                spreadsheet_id=config.spreadsheet_id,
+                worksheet=config.worksheet,
+                service_account_path=config.credentials_path,
+            )
+            digest = records_digest(window._records)
+            remote = RemoteSnapshot(
+                records=tuple(window._records),
+                digest=digest,
+                revision=RemoteRevision(1, digest, 91, 42, "reviewed"),
+                target_sheet_id=42,
+                target_row_count=1_000,
+            )
+
+            with (
+                patch.object(window, "_run_operation") as run_operation,
+                patch.object(
+                    window,
+                    "_confirm_sync_preview",
+                    return_value=True,
+                ),
+                patch.object(window, "_queue_after_operation") as queue,
+                patch.object(window, "_mark_synced") as mark_synced,
+            ):
+                window._push_sheet()
+                preview_complete = run_operation.call_args.args[2]
+                preview_complete(remote)
+
+            queue.assert_called_once()
+            mark_synced.assert_not_called()
+        finally:
+            window.close()
+
+    def test_cancelled_preview_keeps_observed_remote_divergence_dirty(self) -> None:
+        window = self.create_window()
+        try:
+            config = GoogleSheetsConfig(
+                spreadsheet_id="a" * 30,
+                worksheet="Signed",
+                credentials_path=Path("service-account.json"),
+            )
+            window._settings = replace(
+                window._settings,
+                spreadsheet_id=config.spreadsheet_id,
+                worksheet=config.worksheet,
+                service_account_path=config.credentials_path,
+            )
+            target = window._sheet_target(config)
+            baseline_digest = records_digest(window._records)
+            baseline = RemoteSnapshot(
+                records=tuple(window._records),
+                digest=baseline_digest,
+                revision=RemoteRevision(1, baseline_digest, 91, 42, "baseline"),
+                target_sheet_id=42,
+                target_row_count=1_000,
+            )
+            changed_record = LicenseRecord("remote-change", "remote-token")
+            changed_digest = records_digest([changed_record])
+            changed = RemoteSnapshot(
+                records=(changed_record,),
+                digest=changed_digest,
+                revision=RemoteRevision(2, changed_digest, 92, 42, "changed"),
+                target_sheet_id=42,
+                target_row_count=1_000,
+            )
+            window._store_remote_baseline(target, baseline)
+            window._set_sync_badge("synced")
+
+            with (
+                patch.object(window, "_run_operation") as run_operation,
+                patch.object(
+                    window,
+                    "_confirm_sync_preview",
+                    return_value=False,
+                ),
+                patch.object(window, "_queue_after_operation") as queue,
+            ):
+                window._push_sheet()
+                preview_complete = run_operation.call_args.args[2]
+                preview_complete(changed)
+
+            self.assertEqual(window._sync_badge_state, "dirty")
+            queue.assert_not_called()
+        finally:
+            window.close()
+
+    def test_google_sheet_id_with_public_prefix_is_not_misclassified(self) -> None:
+        window = self.create_window()
+        try:
+            config = GoogleSheetsConfig(
+                spreadsheet_id="public-" + "a" * 24,
+                worksheet="Signed",
+                credentials_path=Path("service-account.json"),
+            )
+            window._settings = replace(
+                window._settings,
+                spreadsheet_id=config.spreadsheet_id,
+                worksheet=config.worksheet,
+                service_account_path=config.credentials_path,
+                public_csv_url="https://example.invalid/licenses.csv",
+            )
+            context = window._local_sync_context(window._sheet_target(config))
+
+            self.assertTrue(window._sync_context_is_current(context))
+        finally:
+            window.close()
+
+    def test_project_switch_keeps_current_lease_when_destination_is_locked(self) -> None:
+        with workspace_temp_dir() as directory:
+            root = Path(directory)
+            store = ProjectStore(root / "projects")
+            first_profile = store.ensure_default()
+            second_profile = store.create("Locked Destination")
+            settings = QSettings(
+                str(root / "settings.ini"),
+                QSettings.Format.IniFormat,
+            )
+            settings.setValue("projects/active", first_profile.project_id)
+            destination_lease = ProjectLease.acquire(
+                store.project_directory(second_profile.project_id)
+            )
+            window = LicenseAdminWindow(project_store=store, qsettings=settings)
+            try:
+                window.project_combo.set_current_data(second_profile.project_id)
+                with patch.object(QMessageBox, "critical") as critical:
+                    window._switch_project(second_profile.project_id)
+                critical.assert_called_once()
+                self.assertEqual(window._settings.project_id, first_profile.project_id)
+                self.assertEqual(
+                    window.project_combo.currentData(),
+                    first_profile.project_id,
+                )
+                self.assertTrue(window._project_lease.held)
+
+                destination_lease.release()
+                window._switch_project(second_profile.project_id)
+                self.assertEqual(window._settings.project_id, second_profile.project_id)
+
+                released_source = ProjectLease.acquire(
+                    store.project_directory(first_profile.project_id)
+                )
+                released_source.release()
+            finally:
+                destination_lease.release()
+                window.close()
+                settings.clear()
+                settings.sync()
 
     def test_table_filters_fit_and_clear_button_is_centered(self) -> None:
         window = self.create_window()

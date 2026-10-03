@@ -8,10 +8,13 @@ import unittest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from issue_license import LicenseIssueError, issue_license
-from license_admin.domain import LicenseRecord, parse_signed_csv
+from license_admin.domain import LicenseRecord, parse_signed_csv, records_digest
 from license_admin.google_sheets import (
     GoogleSheetsClient,
     GoogleSheetsConfig,
+    RemoteRevision,
+    RemoteSnapshot,
+    SheetConflictError,
     extract_spreadsheet_id,
 )
 
@@ -51,6 +54,156 @@ class RecordingSheetsClient(GoogleSheetsClient):
         return {}
 
 
+class ProtocolSheetsClient(GoogleSheetsClient):
+    def __init__(self, existing: list[LicenseRecord]) -> None:
+        super().__init__(
+            GoogleSheetsConfig(
+                spreadsheet_id="a" * 30,
+                worksheet="Signed",
+                credentials_path=Path("unused.json"),
+            )
+        )
+        digest = records_digest(existing)
+        self.current = RemoteSnapshot(
+            records=tuple(existing),
+            digest=digest,
+            revision=None,
+            target_sheet_id=42,
+            target_row_count=1_000,
+        )
+        self.stage_records: tuple[LicenseRecord, ...] = ()
+        self.stage_identity: tuple[int, str] | None = None
+        self.events: list[str] = []
+
+    def read_snapshot(self) -> RemoteSnapshot:
+        return self.current
+
+    def _sheet_properties(self) -> dict[str, tuple[int, int, int, bool]]:
+        properties = {"Signed": (42, 1_000, 26, False)}
+        if self.current.revision is not None:
+            properties[self._sentinel_title()] = (
+                self.current.revision.sentinel_sheet_id,
+                2,
+                5,
+                True,
+            )
+        if self.stage_identity is not None:
+            stage_id, stage_title = self.stage_identity
+            properties[stage_title] = (
+                stage_id,
+                len(self.stage_records) + 1,
+                2,
+                True,
+            )
+        return properties
+
+    def _create_stage(self, sheet_id: int, title: str, row_count: int) -> None:
+        self.events.append("create-stage")
+        self.stage_identity = (sheet_id, title)
+
+    def _write_records(
+        self,
+        title: str,
+        records: tuple[LicenseRecord, ...],
+    ) -> None:
+        self.events.append("write-stage")
+        self.stage_records = records
+
+    def _read_records_from_title(self, title: str) -> list[LicenseRecord]:
+        self.events.append("verify-stage")
+        return list(self.stage_records)
+
+    def _publish_batch(
+        self,
+        *,
+        expected: RemoteSnapshot,
+        stage_sheet_id: int,
+        stage_row_count: int,
+        sentinel_sheet_id: int,
+        generation: int,
+        digest: str,
+        operation_id: str,
+    ) -> None:
+        self.events.append("atomic-publish")
+        self.stage_identity = None
+        self.current = RemoteSnapshot(
+            records=self.stage_records,
+            digest=digest,
+            revision=RemoteRevision(
+                generation=generation,
+                digest=digest,
+                sentinel_sheet_id=sentinel_sheet_id,
+                target_sheet_id=expected.target_sheet_id,
+                operation_id=operation_id,
+            ),
+            target_sheet_id=expected.target_sheet_id,
+            target_row_count=expected.target_row_count,
+        )
+
+    def _delete_sheet(self, sheet_id: int) -> None:
+        self.events.append("cleanup-stage")
+        if self.stage_identity is not None and self.stage_identity[0] == sheet_id:
+            self.stage_identity = None
+
+
+class BatchCaptureClient(GoogleSheetsClient):
+    def __init__(self) -> None:
+        super().__init__(
+            GoogleSheetsConfig(
+                spreadsheet_id="a" * 30,
+                worksheet="Signed",
+                credentials_path=Path("unused.json"),
+            )
+        )
+        self.batches: list[list[dict[str, Any]]] = []
+
+    def _batch_update(self, requests_payload: list[dict[str, Any]]) -> Any:
+        self.batches.append(requests_payload)
+        return {}
+
+
+class StageMismatchClient(ProtocolSheetsClient):
+    def _read_records_from_title(self, title: str) -> list[LicenseRecord]:
+        self.events.append("verify-stage")
+        return []
+
+
+class ReadbackMismatchClient(ProtocolSheetsClient):
+    def _publish_batch(
+        self,
+        *,
+        expected: RemoteSnapshot,
+        stage_sheet_id: int,
+        stage_row_count: int,
+        sentinel_sheet_id: int,
+        generation: int,
+        digest: str,
+        operation_id: str,
+    ) -> None:
+        super()._publish_batch(
+            expected=expected,
+            stage_sheet_id=stage_sheet_id,
+            stage_row_count=stage_row_count,
+            sentinel_sheet_id=sentinel_sheet_id,
+            generation=generation,
+            digest=digest,
+            operation_id=operation_id,
+        )
+        self.current = RemoteSnapshot(
+            records=(),
+            digest=records_digest(()),
+            revision=self.current.revision,
+            target_sheet_id=expected.target_sheet_id,
+            target_row_count=expected.target_row_count,
+        )
+
+
+class CreateTimeoutClient(ProtocolSheetsClient):
+    def _create_stage(self, sheet_id: int, title: str, row_count: int) -> None:
+        super()._create_stage(sheet_id, title, row_count)
+        raise LicenseIssueError("create response was lost")
+
+
 class LicenseAdminGoogleSheetsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -84,17 +237,196 @@ class LicenseAdminGoogleSheetsTests(unittest.TestCase):
         with self.assertRaises(LicenseIssueError):
             extract_spreadsheet_id("not a sheet")
 
-    def test_replace_updates_first_then_clears_stale_rows(self) -> None:
+    def test_publish_stages_verifies_and_atomically_swaps_before_readback(self) -> None:
         existing = [self._record("a"), self._record("b"), self._record("c")]
-        client = RecordingSheetsClient(existing)
+        client = ProtocolSheetsClient(existing)
+        desired = [existing[0]]
 
-        client.replace_records([existing[0]])
+        result = client.publish_records(
+            desired,
+            expected_revision=None,
+            expected_digest=records_digest(existing),
+        )
 
-        self.assertEqual([call[0] for call in client.calls], ["PUT", "POST"])
-        update_payload = client.calls[0][2]["json"]
-        self.assertEqual(update_payload["values"][0], ["hwid", "token"])
-        self.assertEqual(update_payload["values"][1][0], "a" * 64)
-        self.assertIn("A3%3AB4", client.calls[1][1])
+        self.assertEqual(
+            client.events,
+            ["create-stage", "write-stage", "verify-stage", "atomic-publish"],
+        )
+        self.assertEqual(result.records, tuple(desired))
+        self.assertEqual(result.digest, records_digest(desired))
+        self.assertEqual(result.revision.generation if result.revision else None, 1)
+
+    def test_stale_remote_snapshot_is_rejected_before_staging(self) -> None:
+        existing = [self._record("a")]
+        changed = [self._record("b")]
+        client = ProtocolSheetsClient(changed)
+
+        with self.assertRaises(SheetConflictError):
+            client.publish_records(
+                existing,
+                expected_revision=None,
+                expected_digest=records_digest(existing),
+            )
+
+        self.assertEqual(client.events, [])
+
+    def test_existing_remote_revision_advances_exactly_once(self) -> None:
+        existing = [self._record("a")]
+        client = ProtocolSheetsClient(existing)
+        digest = records_digest(existing)
+        revision = RemoteRevision(4, digest, 91, 42, "previous")
+        client.current = RemoteSnapshot(tuple(existing), digest, revision, 42, 1_000)
+
+        result = client.publish_records(
+            [self._record("b")],
+            expected_revision=revision,
+            expected_digest=digest,
+        )
+
+        self.assertIsNotNone(result.revision)
+        self.assertEqual(result.revision.generation if result.revision else None, 5)
+        self.assertNotEqual(
+            result.revision.sentinel_sheet_id if result.revision else None,
+            revision.sentinel_sheet_id,
+        )
+
+    def test_stage_verification_failure_never_reaches_canonical_sheet(self) -> None:
+        existing = [self._record("a")]
+        client = StageMismatchClient(existing)
+
+        with self.assertRaisesRegex(LicenseIssueError, "staging verification"):
+            client.publish_records(
+                [self._record("b")],
+                expected_revision=None,
+                expected_digest=records_digest(existing),
+            )
+
+        self.assertEqual(
+            client.events,
+            ["create-stage", "write-stage", "verify-stage", "cleanup-stage"],
+        )
+        self.assertEqual(client.current.records, tuple(existing))
+
+    def test_readback_mismatch_is_never_reported_as_success(self) -> None:
+        existing = [self._record("a")]
+        client = ReadbackMismatchClient(existing)
+
+        with self.assertRaisesRegex(LicenseIssueError, "read-back verification"):
+            client.publish_records(
+                [self._record("b")],
+                expected_revision=None,
+                expected_digest=records_digest(existing),
+            )
+
+    def test_ambiguous_stage_creation_cleans_exact_owned_sheet(self) -> None:
+        existing = [self._record("a")]
+        client = CreateTimeoutClient(existing)
+
+        with self.assertRaisesRegex(LicenseIssueError, "response was lost"):
+            client.publish_records(
+                [self._record("b")],
+                expected_revision=None,
+                expected_digest=records_digest(existing),
+            )
+
+        self.assertEqual(client.events, ["create-stage", "cleanup-stage"])
+        self.assertIsNone(client.stage_identity)
+
+    def test_reconcile_requires_exact_sentinel_and_target_identity(self) -> None:
+        digest = "a" * 64
+        snapshot = RemoteSnapshot(
+            records=(),
+            digest=digest,
+            revision=RemoteRevision(2, digest, 999, 42, "operation"),
+            target_sheet_id=42,
+            target_row_count=1_000,
+        )
+
+        self.assertFalse(
+            GoogleSheetsClient._is_verified_publish(
+                snapshot,
+                operation_id="operation",
+                generation=2,
+                sentinel_sheet_id=91,
+                target_sheet_id=42,
+                digest=digest,
+            )
+        )
+
+    def test_revision_comparison_includes_operation_id(self) -> None:
+        digest = "a" * 64
+        expected = RemoteRevision(2, digest, 91, 42, "expected-operation")
+        changed = RemoteRevision(2, digest, 91, 42, "different-operation")
+
+        self.assertFalse(GoogleSheetsClient._same_revision(changed, expected))
+
+    def test_atomic_publish_expands_narrow_target_to_two_columns(self) -> None:
+        client = BatchCaptureClient()
+        expected = RemoteSnapshot(
+            records=(),
+            digest="a" * 64,
+            revision=None,
+            target_sheet_id=42,
+            target_row_count=100,
+            target_column_count=1,
+        )
+
+        client._publish_batch(
+            expected=expected,
+            stage_sheet_id=77,
+            stage_row_count=5,
+            sentinel_sheet_id=92,
+            generation=1,
+            digest="b" * 64,
+            operation_id="next",
+        )
+
+        expand = next(
+            request["updateSheetProperties"]
+            for request in client.batches[0]
+            if "updateSheetProperties" in request
+        )
+        self.assertEqual(
+            expand["properties"]["gridProperties"],
+            {"rowCount": 100, "columnCount": 2},
+        )
+        self.assertIn("gridProperties.columnCount", expand["fields"])
+
+    def test_final_publish_is_one_atomic_guarded_batch(self) -> None:
+        client = BatchCaptureClient()
+        digest = "a" * 64
+        revision = RemoteRevision(
+            generation=7,
+            digest=digest,
+            sentinel_sheet_id=91,
+            target_sheet_id=42,
+            operation_id="previous",
+        )
+        expected = RemoteSnapshot((), digest, revision, 42, 1_000)
+
+        client._publish_batch(
+            expected=expected,
+            stage_sheet_id=77,
+            stage_row_count=5,
+            sentinel_sheet_id=92,
+            generation=8,
+            digest="b" * 64,
+            operation_id="next",
+        )
+
+        self.assertEqual(len(client.batches), 1)
+        requests_payload = client.batches[0]
+        self.assertEqual(requests_payload[0], {"deleteSheet": {"sheetId": 91}})
+        self.assertEqual(
+            requests_payload[1]["addSheet"]["properties"]["sheetId"],
+            92,
+        )
+        request_kinds = [next(iter(item)) for item in requests_payload]
+        self.assertIn("updateCells", request_kinds)
+        self.assertIn("copyPaste", request_kinds)
+        self.assertEqual(requests_payload[-1], {"deleteSheet": {"sheetId": 77}})
+        copy_request = next(item["copyPaste"] for item in requests_payload if "copyPaste" in item)
+        self.assertEqual(copy_request["destination"]["sheetId"], 42)
 
     def test_format_freezes_header_formats_text_and_adds_filter(self) -> None:
         client = RecordingSheetsClient([])
