@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import replace
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -42,6 +43,7 @@ from license_admin.dialogs import (
 from license_admin.data_recovery import ProjectDataState
 from license_admin.domain import LicenseRecord, records_digest
 from license_admin.flag_icons import FLAG_CDN_TEMPLATE, FlagIconLoader
+from license_admin.feed_manifest import publication_content_digest
 from license_admin.google_sheets import (
     GoogleSheetsConfig,
     RemoteRevision,
@@ -63,6 +65,12 @@ from license_admin.popover import RoundedMenu
 from license_admin.project_lock import ProjectLease
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.record_transaction import RecordTransaction
+from license_admin.revocations import (
+    RevocationEntry,
+    RevocationPhase,
+    mark_published,
+    mark_revoked,
+)
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.service_account_store import import_service_account
 from license_admin.settings import ProjectStore
@@ -836,6 +844,70 @@ class LicenseAdminUiTests(unittest.TestCase):
             run_operation.assert_not_called()
         finally:
             window._set_busy(False, "ready")
+            window.close()
+
+    def test_revocation_badge_only_completes_after_publication(self) -> None:
+        window = self.create_window()
+        try:
+            now = datetime(2026, 10, 3, tzinfo=timezone.utc)
+            pending = (
+                RevocationEntry(
+                    hwid="a" * 64,
+                    jti="b" * 32,
+                    username="Revoked User",
+                    revoked_at=now,
+                    phase=RevocationPhase.PENDING,
+                ),
+            )
+            window._records = []
+
+            window._revocations = pending
+            window._mark_synced("not complete")
+            self.assertEqual(window._sync_badge_state, "revocation_pending")
+
+            window._revocations = mark_revoked(pending)
+            window._mark_synced("not complete")
+            self.assertEqual(window._sync_badge_state, "revoked_pending")
+
+            window._revocations = mark_published(
+                window._revocations,
+                revision=4,
+                published_at=now,
+            )
+            window._mark_synced(
+                "published",
+                expected_content_digest=window._local_publication_digest(),
+            )
+            self.assertEqual(window._sync_badge_state, "synced")
+        finally:
+            window.close()
+
+    def test_pull_cannot_mark_missing_local_tombstone_as_synced(self) -> None:
+        window = self.create_window()
+        try:
+            now = datetime(2026, 10, 3, tzinfo=timezone.utc)
+            window._records = []
+            window._revocations = (
+                RevocationEntry(
+                    hwid="a" * 64,
+                    jti="b" * 32,
+                    username="Revoked User",
+                    revoked_at=now,
+                    phase=RevocationPhase.PUBLISHED,
+                    published_at=now,
+                    published_revision=3,
+                ),
+            )
+
+            with patch.object(window, "_notify") as notify:
+                window._mark_synced(
+                    "pulled",
+                    expected_content_digest=publication_content_digest((), ()),
+                )
+
+            self.assertEqual(window._sync_badge_state, "dirty")
+            notify.assert_called_once()
+        finally:
             window.close()
 
     def test_sync_diff_preview_never_exposes_license_tokens(self) -> None:

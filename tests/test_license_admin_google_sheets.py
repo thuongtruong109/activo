@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from issue_license import LicenseIssueError, issue_license
 from license_admin.domain import LicenseRecord, parse_signed_csv, records_digest
+from license_admin.feed_manifest import FeedDocument, feed_digest, publication_content_digest
 from license_admin.google_sheets import (
     GoogleSheetsClient,
     GoogleSheetsConfig,
@@ -72,6 +73,7 @@ class ProtocolSheetsClient(GoogleSheetsClient):
             target_row_count=1_000,
         )
         self.stage_records: tuple[LicenseRecord, ...] = ()
+        self.stage_feed: FeedDocument | None = None
         self.stage_identity: tuple[int, str] | None = None
         self.events: list[str] = []
 
@@ -101,17 +103,20 @@ class ProtocolSheetsClient(GoogleSheetsClient):
         self.events.append("create-stage")
         self.stage_identity = (sheet_id, title)
 
-    def _write_records(
+    def _write_feed(
         self,
         title: str,
-        records: tuple[LicenseRecord, ...],
+        feed: FeedDocument,
     ) -> None:
         self.events.append("write-stage")
-        self.stage_records = records
+        self.stage_feed = feed
+        self.stage_records = feed.records
 
-    def _read_records_from_title(self, title: str) -> list[LicenseRecord]:
+    def _read_feed_from_title(self, title: str) -> FeedDocument:
         self.events.append("verify-stage")
-        return list(self.stage_records)
+        if self.stage_feed is None:
+            raise AssertionError("stage feed was not written")
+        return self.stage_feed
 
     def _publish_batch(
         self,
@@ -126,6 +131,8 @@ class ProtocolSheetsClient(GoogleSheetsClient):
     ) -> None:
         self.events.append("atomic-publish")
         self.stage_identity = None
+        if self.stage_feed is None:
+            raise AssertionError("stage feed was not written")
         self.current = RemoteSnapshot(
             records=self.stage_records,
             digest=digest,
@@ -138,6 +145,13 @@ class ProtocolSheetsClient(GoogleSheetsClient):
             ),
             target_sheet_id=expected.target_sheet_id,
             target_row_count=expected.target_row_count,
+            target_column_count=5,
+            tombstones=self.stage_feed.tombstones,
+            manifest_token=self.stage_feed.manifest_token,
+            content_digest=publication_content_digest(
+                self.stage_feed.records,
+                self.stage_feed.tombstones,
+            ),
         )
 
     def _delete_sheet(self, sheet_id: int) -> None:
@@ -163,9 +177,9 @@ class BatchCaptureClient(GoogleSheetsClient):
 
 
 class StageMismatchClient(ProtocolSheetsClient):
-    def _read_records_from_title(self, title: str) -> list[LicenseRecord]:
+    def _read_feed_from_title(self, title: str) -> FeedDocument:
         self.events.append("verify-stage")
-        return []
+        return FeedDocument((), (), "invalid")
 
 
 class ReadbackMismatchClient(ProtocolSheetsClient):
@@ -191,10 +205,14 @@ class ReadbackMismatchClient(ProtocolSheetsClient):
         )
         self.current = RemoteSnapshot(
             records=(),
-            digest=records_digest(()),
+            digest=feed_digest(self.stage_feed) if self.stage_feed is not None else records_digest(()),
             revision=self.current.revision,
             target_sheet_id=expected.target_sheet_id,
             target_row_count=expected.target_row_count,
+            target_column_count=5,
+            tombstones=self.current.tombstones,
+            manifest_token=self.current.manifest_token,
+            content_digest=publication_content_digest((), self.current.tombstones),
         )
 
 
@@ -225,6 +243,24 @@ class LicenseAdminGoogleSheetsTests(unittest.TestCase):
         )
         return parse_signed_csv(f"{hwid},{token}\n")[0]
 
+    def _publish(
+        self,
+        client: GoogleSheetsClient,
+        records: list[LicenseRecord],
+        *,
+        expected_revision: RemoteRevision | None,
+        expected_digest: str,
+    ) -> RemoteSnapshot:
+        return client.publish_records(
+            records,
+            tombstones=(),
+            signing_key=self.private_key,
+            issuer=TEST_ISSUER,
+            audience=TEST_AUDIENCE,
+            expected_revision=expected_revision,
+            expected_digest=expected_digest,
+        )
+
     def test_extracts_id_from_sheet_urls(self) -> None:
         sheet_id = "abcDEF_12345678901234567890"
         self.assertEqual(
@@ -242,7 +278,8 @@ class LicenseAdminGoogleSheetsTests(unittest.TestCase):
         client = ProtocolSheetsClient(existing)
         desired = [existing[0]]
 
-        result = client.publish_records(
+        result = self._publish(
+            client,
             desired,
             expected_revision=None,
             expected_digest=records_digest(existing),
@@ -253,7 +290,9 @@ class LicenseAdminGoogleSheetsTests(unittest.TestCase):
             ["create-stage", "write-stage", "verify-stage", "atomic-publish"],
         )
         self.assertEqual(result.records, tuple(desired))
-        self.assertEqual(result.digest, records_digest(desired))
+        self.assertIsNotNone(client.stage_feed)
+        assert client.stage_feed is not None
+        self.assertEqual(result.digest, feed_digest(client.stage_feed))
         self.assertEqual(result.revision.generation if result.revision else None, 1)
 
     def test_stale_remote_snapshot_is_rejected_before_staging(self) -> None:
@@ -262,7 +301,8 @@ class LicenseAdminGoogleSheetsTests(unittest.TestCase):
         client = ProtocolSheetsClient(changed)
 
         with self.assertRaises(SheetConflictError):
-            client.publish_records(
+            self._publish(
+                client,
                 existing,
                 expected_revision=None,
                 expected_digest=records_digest(existing),
@@ -277,7 +317,8 @@ class LicenseAdminGoogleSheetsTests(unittest.TestCase):
         revision = RemoteRevision(4, digest, 91, 42, "previous")
         client.current = RemoteSnapshot(tuple(existing), digest, revision, 42, 1_000)
 
-        result = client.publish_records(
+        result = self._publish(
+            client,
             [self._record("b")],
             expected_revision=revision,
             expected_digest=digest,
@@ -295,7 +336,8 @@ class LicenseAdminGoogleSheetsTests(unittest.TestCase):
         client = StageMismatchClient(existing)
 
         with self.assertRaisesRegex(LicenseIssueError, "staging verification"):
-            client.publish_records(
+            self._publish(
+                client,
                 [self._record("b")],
                 expected_revision=None,
                 expected_digest=records_digest(existing),
@@ -312,7 +354,8 @@ class LicenseAdminGoogleSheetsTests(unittest.TestCase):
         client = ReadbackMismatchClient(existing)
 
         with self.assertRaisesRegex(LicenseIssueError, "read-back verification"):
-            client.publish_records(
+            self._publish(
+                client,
                 [self._record("b")],
                 expected_revision=None,
                 expected_digest=records_digest(existing),
@@ -323,7 +366,8 @@ class LicenseAdminGoogleSheetsTests(unittest.TestCase):
         client = CreateTimeoutClient(existing)
 
         with self.assertRaisesRegex(LicenseIssueError, "response was lost"):
-            client.publish_records(
+            self._publish(
+                client,
                 [self._record("b")],
                 expected_revision=None,
                 expected_digest=records_digest(existing),
@@ -388,7 +432,7 @@ class LicenseAdminGoogleSheetsTests(unittest.TestCase):
         )
         self.assertEqual(
             expand["properties"]["gridProperties"],
-            {"rowCount": 100, "columnCount": 2},
+            {"rowCount": 100, "columnCount": 5},
         )
         self.assertIn("gridProperties.columnCount", expand["fields"])
 

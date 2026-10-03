@@ -13,6 +13,7 @@ from issue_license import issue_license
 from license_admin.data_recovery import ProjectDataState, load_project_records
 from license_admin.domain import parse_signed_csv
 from license_admin.settings import ProjectStore
+from license_admin.revocations import RevocationRepository, request_revocation
 from license_admin.storage import LicenseRepository
 from workspace_temp import workspace_temp_dir
 
@@ -88,6 +89,26 @@ class ProjectDataRecoveryTests(unittest.TestCase):
 
             self.assertEqual(result.state, ProjectDataState.UNAVAILABLE)
             self.assertFalse(result.state.allows_writes)
+
+    def test_durable_tombstone_wins_after_a_mid_transaction_crash(self) -> None:
+        with workspace_temp_dir() as directory:
+            settings = ProjectStore(Path(directory) / "projects").ensure_default()
+            active = parse_signed_csv(f"{'a' * 64},invalid-token\n")[0]
+            LicenseRepository(settings.local_csv_path).save([active])
+            RevocationRepository.beside(settings.local_csv_path).save(
+                request_revocation(
+                    (),
+                    active,
+                    now=datetime(2026, 10, 3, tzinfo=timezone.utc),
+                )
+            )
+
+            result = load_project_records(settings)
+
+            self.assertEqual(result.state, ProjectDataState.EMPTY)
+            self.assertEqual(result.records, ())
+            self.assertEqual(len(result.revocations), 1)
+            self.assertEqual(result.revocations[0].hwid, active.hwid)
 
 
 if __name__ == "__main__":

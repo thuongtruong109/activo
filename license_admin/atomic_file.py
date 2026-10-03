@@ -79,3 +79,32 @@ def atomic_write_text(
         temporary_path.unlink(missing_ok=True)
         raise
     return backup
+
+
+def atomic_write_bytes(
+    path: Path,
+    content: bytes,
+    *,
+    create_backup: bool = True,
+) -> Path | None:
+    """Atomically replace *path* with exact bytes, optionally backing it up."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    temporary_path = Path(temporary_name)
+    backup: Path | None = None
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if create_backup:
+            backup = create_versioned_backup(path)
+        os.replace(temporary_path, path)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return backup

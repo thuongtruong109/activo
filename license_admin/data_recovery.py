@@ -8,6 +8,7 @@ from enum import Enum
 from issue_license import LicenseIssueError
 from license_admin.domain import LicenseRecord, validate_record_signatures
 from license_admin.settings import AdminSettings
+from license_admin.revocations import RevocationEntry, RevocationRepository
 from license_admin.storage import (
     LicenseDataFailure,
     LicenseDataLoadError,
@@ -32,6 +33,7 @@ class ProjectDataState(str, Enum):
 class ProjectDataLoadResult:
     state: ProjectDataState
     records: tuple[LicenseRecord, ...] = ()
+    revocations: tuple[RevocationEntry, ...] = ()
     detail: str = ""
 
 
@@ -47,6 +49,7 @@ def load_project_records(settings: AdminSettings) -> ProjectDataLoadResult:
     """Load and verify data without collapsing failures into an empty project."""
     try:
         raw_records = LicenseRepository(settings.local_csv_path).load()
+        revocations = RevocationRepository.beside(settings.local_csv_path).load()
     except LicenseDataLoadError as exc:
         state = {
             LicenseDataFailure.CORRUPTED: ProjectDataState.CORRUPTED,
@@ -54,9 +57,28 @@ def load_project_records(settings: AdminSettings) -> ProjectDataLoadResult:
             LicenseDataFailure.UNAVAILABLE: ProjectDataState.UNAVAILABLE,
         }[exc.failure]
         return ProjectDataLoadResult(state=state, detail=str(exc))
+    except LicenseIssueError as exc:
+        return ProjectDataLoadResult(
+            state=ProjectDataState.CORRUPTED,
+            detail=str(exc),
+        )
+
+    active_hwids = {record.hwid.casefold() for record in raw_records}
+    revoked_hwids = {entry.hwid.casefold() for entry in revocations}
+    overlap = active_hwids & revoked_hwids
+    if overlap:
+        # A crash can occur after the tombstone journal is durable but before the
+        # active CSV is replaced. Tombstones are fail-safe and always win; the
+        # next successful state transaction will remove the stale active rows.
+        raw_records = [
+            record for record in raw_records if record.hwid.casefold() not in overlap
+        ]
 
     if not raw_records:
-        return ProjectDataLoadResult(state=ProjectDataState.EMPTY)
+        return ProjectDataLoadResult(
+            state=ProjectDataState.EMPTY,
+            revocations=revocations,
+        )
 
     verification_paths = settings.trusted_public_key_paths or (
         settings.public_key_path,
@@ -93,10 +115,12 @@ def load_project_records(settings: AdminSettings) -> ProjectDataLoadResult:
         return ProjectDataLoadResult(
             state=ProjectDataState.WRONG_KEY,
             records=tuple(verified),
+            revocations=revocations,
             detail="Every license was rejected by the configured public key.",
         )
 
     return ProjectDataLoadResult(
         state=ProjectDataState.READY,
         records=tuple(verified),
+        revocations=revocations,
     )

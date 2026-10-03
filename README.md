@@ -45,6 +45,9 @@ Mỗi thư mục `projects/<project-id>/` là một profile độc lập, gồm:
 - `service-account.json`: credential Google riêng của project (nếu dùng đồng bộ
   có quyền ghi).
 - `license_admin_data.csv`: dữ liệu quản trị cục bộ.
+- `license_admin_data.revocations.json`: journal tombstone và trạng thái publish
+  của từng lần thu hồi; file này được commit cùng snapshot active theo cơ chế
+  fail-safe (nếu crash giữa hai file thì tombstone thắng).
 
 Chọn **Dự án → Thêm dự án…** để tạo profile mới. Mỗi profile lưu cấu hình độc
 lập; chuyển project không dùng lại CSV, key, Sheet, issuer hoặc audience của
@@ -139,7 +142,7 @@ không nên thêm liên kết mã nguồn giữa License Manager với ứng d�
 
 - Xem, tìm kiếm, lọc, sắp xếp và kiểm tra chữ ký toàn bộ license.
 - Tạo, gia hạn, sửa và thu hồi license.
-- Nhập signed CSV, chuyển đổi legacy CSV và xuất signed CSV.
+- Nhập signed CSV, chuyển đổi legacy CSV và xuất signed feed v2.
 - Tải/đồng bộ Google Sheet với diff preview, local revision đơn điệu, staged
   publish nguyên tử, revision CAS giữa các License Manager tương thích và
   read-back verification trước khi báo `Synced`.
@@ -171,6 +174,58 @@ Google Sheets API áp dụng các request trong một `batchUpdate` cùng nhau n
 không cung cấp conditional write cho chỉnh sửa thủ công của collaborator. Vì
 vậy CAS của ứng dụng bảo vệ các writer License Manager tương thích; nên giới hạn
 quyền sửa Sheet và tránh chỉnh trực tiếp worksheet đích trong lúc publish.
+
+### Thu hồi license và signed feed v2
+
+Thu hồi không còn đồng nghĩa với xóa một dòng local. Mỗi license đi qua trạng
+thái **Active → Revocation pending → Revoked — publish pending → Published**:
+
+1. thao tác **Thu hồi** ghi tombstone bền vững trước khi bỏ record khỏi danh
+   sách active;
+2. khi bắt đầu push, tombstone được chuyển sang trạng thái đã chuẩn bị thu hồi;
+3. Google Sheet nhận feed qua worksheet staging và một `batchUpdate` nguyên tử;
+4. chỉ sau read-back verification thành công, journal mới ghi `Published` cùng
+   revision và thời điểm publish. Lỗi mạng, conflict hoặc local revision đổi
+   giữa chừng đều không được hiển thị là đã publish/synced.
+
+Feed CSV v2 có các dòng `manifest`, `active` và `revoked`. Manifest RS256 ký
+digest của cả danh sách active lẫn tombstone, đồng thời chứa `schema`, revision
+đơn điệu, `generated_at`, `exp`, issuer, audience, key ID và số lượng record.
+Freshness mặc định là 7 ngày và không được vượt quá 31 ngày. Feed legacy không
+có manifest chỉ được hỗ trợ ở đường migration; client bảo mật phải từ chối.
+
+JWT đã phát hành chỉ thực sự bị vô hiệu trên client sau khi client tải một feed
+mới còn freshness và thấy HWID hoặc JTI trong tombstone. Client phải fail closed
+khi không thể có feed còn hạn theo policy của sản phẩm; không được tiếp tục tin
+JWT chỉ vì chữ ký và `exp` của JWT vẫn hợp lệ.
+
+Python client có thể dùng entry point sau để verify chữ ký/freshness, chống
+rollback/equivocation bằng revision store bền vững, rồi kiểm tra tombstone:
+
+```python
+from pathlib import Path
+
+from license_admin.feed_manifest import (
+    ManifestRevisionStore,
+    parse_verify_and_accept_feed,
+)
+
+feed = parse_verify_and_accept_feed(
+    downloaded_csv,
+    trusted_public_keys,
+    issuer="my-product-license-server",
+    audience="my-product-desktop",
+    revision_store=ManifestRevisionStore(
+        Path(user_data_dir) / "accepted-feed-revision.json"
+    ),
+)
+if feed.is_revoked(hwid=verified_claims["hwid"], jti=verified_claims.get("jti")):
+    raise LicenseError("License has been revoked")
+```
+
+`accepted-feed-revision.json` phải nằm trong vùng dữ liệu mutable bền vững của
+client. Không xóa hoặc rollback file này khi cập nhật ứng dụng, nếu không client
+sẽ mất mốc revision cao nhất đã chấp nhận.
 
 ## CLI
 

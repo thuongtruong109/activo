@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import io
@@ -23,9 +23,21 @@ import requests
 from issue_license import LicenseIssueError
 from license_admin.domain import (
     LicenseRecord,
-    parse_signed_csv,
     records_digest,
     serialize_signed_csv,
+)
+from license_admin.feed_manifest import (
+    DEFAULT_FRESHNESS,
+    FEED_COLUMNS,
+    FeedDocument,
+    FeedManifest,
+    FeedTombstone,
+    feed_digest,
+    parse_feed_csv,
+    publication_content_digest,
+    serialize_feed_csv,
+    sign_feed,
+    verify_feed,
 )
 from license_admin.service_account_store import load_service_account
 
@@ -56,10 +68,21 @@ class RemoteSnapshot:
     target_sheet_id: int
     target_row_count: int
     target_column_count: int = 2
+    tombstones: tuple[FeedTombstone, ...] = ()
+    manifest_token: str = ""
+    manifest: FeedManifest | None = None
+    content_digest: str = ""
 
     @property
     def guard_matches_data(self) -> bool:
         return self.revision is None or self.revision.digest == self.digest
+
+    @property
+    def publication_digest(self) -> str:
+        return self.content_digest or publication_content_digest(
+            self.records,
+            self.tombstones,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,12 +290,15 @@ class GoogleSheetsClient:
             normalized.append([str(value) for value in row])
         return normalized
 
-    def _read_records_from_title(self, title: str) -> list[LicenseRecord]:
+    def _read_feed_from_title(self, title: str) -> FeedDocument:
         output = io.StringIO(newline="")
         csv.writer(output, lineterminator="\n").writerows(
-            [row[:2] for row in self._read_rows(title)]
+            [row[:5] for row in self._read_rows(title, "A:E")]
         )
-        return parse_signed_csv(output.getvalue())
+        return parse_feed_csv(output.getvalue(), allow_legacy=True)
+
+    def _read_records_from_title(self, title: str) -> list[LicenseRecord]:
+        return list(self._read_feed_from_title(title).records)
 
     def read_records(self) -> list[LicenseRecord]:
         return self._read_records_from_title(self.config.worksheet)
@@ -323,8 +349,13 @@ class GoogleSheetsClient:
                 f"Worksheet {self.config.worksheet!r} does not exist."
             )
         target_sheet_id, target_row_count, target_column_count, _hidden = target
-        records = tuple(self.read_records())
-        digest = records_digest(records)
+        feed = self._read_feed_from_title(self.config.worksheet)
+        records = feed.records
+        digest = (
+            feed_digest(feed)
+            if feed.manifest_token
+            else records_digest(records)
+        )
         revision = self._read_remote_revision(properties, target_sheet_id)
         return RemoteSnapshot(
             records=records,
@@ -333,6 +364,12 @@ class GoogleSheetsClient:
             target_sheet_id=target_sheet_id,
             target_row_count=target_row_count,
             target_column_count=target_column_count,
+            tombstones=feed.tombstones,
+            manifest_token=feed.manifest_token,
+            content_digest=publication_content_digest(
+                feed.records,
+                feed.tombstones,
+            ),
         )
 
     @staticmethod
@@ -382,7 +419,7 @@ class GoogleSheetsClient:
                             "hidden": True,
                             "gridProperties": {
                                 "rowCount": max(2, row_count),
-                                "columnCount": 2,
+                                "columnCount": len(FEED_COLUMNS),
                             },
                         }
                     }
@@ -403,11 +440,11 @@ class GoogleSheetsClient:
             # Cleanup is best-effort; never mask the publish error that led here.
             pass
 
-    def _write_records(self, title: str, records: tuple[LicenseRecord, ...]) -> None:
-        values = [["hwid", "token"]] + [
-            [record.hwid, record.token] for record in records
-        ]
-        cell_range = f"{self._quoted_title(title)}!A1:B{len(values)}"
+    def _write_feed(self, title: str, feed: FeedDocument) -> None:
+        values = list(
+            csv.reader(io.StringIO(serialize_feed_csv(feed), newline=""), strict=True)
+        )
+        cell_range = f"{self._quoted_title(title)}!A1:E{len(values)}"
         self._request(
             "PUT",
             self._values_url(cell_range),
@@ -493,7 +530,7 @@ class GoogleSheetsClient:
         )
         if (
             expected.target_row_count < stage_row_count
-            or expected.target_column_count < 2
+            or expected.target_column_count < len(FEED_COLUMNS)
         ):
             requests_payload.append(
                 {
@@ -505,7 +542,8 @@ class GoogleSheetsClient:
                                     expected.target_row_count, stage_row_count
                                 ),
                                 "columnCount": max(
-                                    expected.target_column_count, 2
+                                    expected.target_column_count,
+                                    len(FEED_COLUMNS),
                                 ),
                             },
                         },
@@ -525,7 +563,7 @@ class GoogleSheetsClient:
                             "startRowIndex": 0,
                             "endRowIndex": max(expected.target_row_count, stage_row_count),
                             "startColumnIndex": 0,
-                            "endColumnIndex": 2,
+                            "endColumnIndex": len(FEED_COLUMNS),
                         },
                         "rows": [],
                         "fields": "userEnteredValue",
@@ -538,14 +576,14 @@ class GoogleSheetsClient:
                             "startRowIndex": 0,
                             "endRowIndex": stage_row_count,
                             "startColumnIndex": 0,
-                            "endColumnIndex": 2,
+                            "endColumnIndex": len(FEED_COLUMNS),
                         },
                         "destination": {
                             "sheetId": expected.target_sheet_id,
                             "startRowIndex": 0,
                             "endRowIndex": stage_row_count,
                             "startColumnIndex": 0,
-                            "endColumnIndex": 2,
+                            "endColumnIndex": len(FEED_COLUMNS),
                         },
                         "pasteType": "PASTE_VALUES",
                         "pasteOrientation": "NORMAL",
@@ -576,22 +614,68 @@ class GoogleSheetsClient:
             and snapshot.target_sheet_id == target_sheet_id
             and snapshot.digest == digest
             and snapshot.guard_matches_data
+            and snapshot.manifest is not None
+            and snapshot.manifest.revision == generation
         )
 
     def publish_records(
         self,
         records: list[LicenseRecord] | tuple[LicenseRecord, ...],
         *,
+        tombstones: tuple[FeedTombstone, ...],
+        signing_key: rsa.RSAPrivateKey,
+        issuer: str,
+        audience: str,
         expected_revision: RemoteRevision | None,
         expected_digest: str,
+        freshness: timedelta = DEFAULT_FRESHNESS,
+        minimum_revision: int = 0,
     ) -> RemoteSnapshot:
-        """Stage, atomically compare-and-swap, and verify one Sheet snapshot."""
+        """Sign, stage, atomically compare-and-swap, and verify one feed."""
         ordered = tuple(
             sorted(records, key=lambda item: (item.username.casefold(), item.hwid))
         )
-        desired_digest = records_digest(ordered)
         reviewed = self.read_snapshot()
         self._assert_expected_snapshot(reviewed, expected_revision, expected_digest)
+        next_remote_revision = (
+            expected_revision.generation + 1
+            if expected_revision is not None
+            else 1
+        )
+        generation = max(next_remote_revision, minimum_revision + 1)
+        desired_feed = sign_feed(
+            ordered,
+            tombstones,
+            signing_key,
+            revision=generation,
+            issuer=issuer,
+            audience=audience,
+            freshness=freshness,
+        )
+        desired_digest = feed_digest(desired_feed)
+        public_pem = signing_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+
+        def verified_snapshot(snapshot: RemoteSnapshot) -> RemoteSnapshot:
+            verified_feed = verify_feed(
+                FeedDocument(
+                    snapshot.records,
+                    snapshot.tombstones,
+                    snapshot.manifest_token,
+                ),
+                public_pem,
+                expected_issuer=issuer,
+                expected_audience=audience,
+                minimum_revision=generation,
+            )
+            manifest = verified_feed.manifest
+            if manifest is None or manifest.revision != generation:
+                raise LicenseIssueError(
+                    "Google Sheets returned the wrong signed manifest revision."
+                )
+            return replace(snapshot, manifest=manifest)
 
         properties = self._sheet_properties()
         used_ids = {
@@ -604,26 +688,35 @@ class GoogleSheetsClient:
         stage_title = f"__activo_stage_{operation_id}"
         stage_cleanup_needed = True
         try:
-            self._create_stage(stage_sheet_id, stage_title, len(ordered) + 1)
-            self._write_records(stage_title, ordered)
-            staged = tuple(self._read_records_from_title(stage_title))
-            if records_digest(staged) != desired_digest:
+            stage_row_count = len(ordered) + len(tombstones) + 2
+            self._create_stage(stage_sheet_id, stage_title, stage_row_count)
+            self._write_feed(stage_title, desired_feed)
+            try:
+                staged = self._read_feed_from_title(stage_title)
+                verify_feed(
+                    staged,
+                    public_pem,
+                    expected_issuer=issuer,
+                    expected_audience=audience,
+                    minimum_revision=generation,
+                )
+                staged_matches = feed_digest(staged) == desired_digest
+            except LicenseIssueError as exc:
+                raise LicenseIssueError(
+                    "Google Sheets staging verification failed; published data was untouched."
+                ) from exc
+            if not staged_matches:
                 raise LicenseIssueError(
                     "Google Sheets staging verification failed; published data was untouched."
                 )
 
             current = self.read_snapshot()
             self._assert_expected_snapshot(current, expected_revision, expected_digest)
-            generation = (
-                expected_revision.generation + 1
-                if expected_revision is not None
-                else 1
-            )
             try:
                 self._publish_batch(
                     expected=current,
                     stage_sheet_id=stage_sheet_id,
-                    stage_row_count=len(ordered) + 1,
+                    stage_row_count=stage_row_count,
                     sentinel_sheet_id=sentinel_sheet_id,
                     generation=generation,
                     digest=desired_digest,
@@ -632,7 +725,7 @@ class GoogleSheetsClient:
                 stage_cleanup_needed = False
             except LicenseIssueError as publish_error:
                 try:
-                    reconciled = self.read_snapshot()
+                    reconciled = verified_snapshot(self.read_snapshot())
                 except LicenseIssueError:
                     raise publish_error
                 if self._is_verified_publish(
@@ -651,7 +744,12 @@ class GoogleSheetsClient:
                     ) from publish_error
                 raise
 
-            verified = self.read_snapshot()
+            try:
+                verified = verified_snapshot(self.read_snapshot())
+            except LicenseIssueError as exc:
+                raise LicenseIssueError(
+                    "Google Sheets read-back verification failed; sync was not confirmed."
+                ) from exc
             if not self._is_verified_publish(
                 verified,
                 operation_id=operation_id,
@@ -679,7 +777,11 @@ class GoogleSheetsClient:
 
     def format_worksheet(self) -> None:
         sheet_id, row_count = self._worksheet_properties()
-        grid_range = {"sheetId": sheet_id, "startColumnIndex": 0, "endColumnIndex": 2}
+        grid_range = {
+            "sheetId": sheet_id,
+            "startColumnIndex": 0,
+            "endColumnIndex": len(FEED_COLUMNS),
+        }
         header_range = dict(grid_range, startRowIndex=0, endRowIndex=1)
         body_range = dict(grid_range, startRowIndex=1, endRowIndex=max(2, row_count))
         requests_payload: list[dict[str, Any]] = [
@@ -753,7 +855,7 @@ class GoogleSheetsClient:
                             "startRowIndex": 0,
                             "endRowIndex": max(2, row_count),
                             "startColumnIndex": 0,
-                            "endColumnIndex": 2,
+                            "endColumnIndex": len(FEED_COLUMNS),
                         }
                     }
                 }
@@ -762,7 +864,7 @@ class GoogleSheetsClient:
         self._batch_update(requests_payload)
 
 
-def download_public_records(url: str) -> list[LicenseRecord]:
+def download_public_feed(url: str) -> FeedDocument:
     if not url.strip().startswith("https://"):
         raise LicenseIssueError("Public CSV URL must use HTTPS.")
     try:
@@ -770,7 +872,12 @@ def download_public_records(url: str) -> list[LicenseRecord]:
         response.raise_for_status()
     except requests.RequestException as exc:
         raise LicenseIssueError(f"Unable to download the published CSV: {exc}") from exc
-    return parse_signed_csv(response.text)
+    return parse_feed_csv(response.text)
+
+
+def download_public_records(url: str) -> list[LicenseRecord]:
+    """Compatibility helper; secure clients should verify the returned feed."""
+    return list(download_public_feed(url).records)
 
 
 def export_csv_text(records: list[LicenseRecord]) -> str:

@@ -16,6 +16,7 @@ projects/*/*.key
 projects/*/*.p12
 projects/*/*.pfx
 projects/*/license_admin_data.csv
+projects/*/license_admin_data.revocations.json
 projects/*/input.csv
 projects/*/service-account*.json
 projects/*/google-credentials*.json

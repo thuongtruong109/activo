@@ -60,8 +60,6 @@ from license_admin.domain import (
     LicenseStatus,
     license_key_id,
     parse_signed_csv,
-    records_digest,
-    serialize_signed_csv,
     validate_record_signatures,
 )
 from license_admin.google_sheets import (
@@ -70,7 +68,17 @@ from license_admin.google_sheets import (
     RemoteRevision,
     RemoteSnapshot,
     SheetConflictError,
-    download_public_records,
+    download_public_feed,
+)
+from license_admin.feed_manifest import (
+    FeedDocument,
+    FeedTombstone,
+    feed_digest,
+    parse_feed_csv,
+    publication_content_digest,
+    serialize_feed_csv,
+    sign_feed,
+    verify_feed,
 )
 from license_admin.flag_icons import FlagIconLoader
 from license_admin.icons import svg_icon
@@ -84,6 +92,7 @@ from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.key_identity import KeyIdentityStore
 from license_admin.key_store import KeyPasswordRequiredError, load_private_key_file
 from license_admin.key_rotation import resign_unexpired_records
+from license_admin.license_state import LicenseStateSnapshot, LicenseStateTransaction
 from license_admin.localization import (
     LANGUAGES,
     current_language,
@@ -100,6 +109,15 @@ from license_admin.project_lock import ProjectLease, ProjectLockError
 from license_admin.project_selector import ProjectSelector
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.record_transaction import RecordTransaction
+from license_admin.revocations import (
+    RevocationEntry,
+    RevocationPhase,
+    RevocationRepository,
+    mark_published,
+    mark_revoked,
+    merge_published_tombstones,
+    request_revocation,
+)
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.settings import AdminSettings, ProjectStore, normalize_project_id
 from license_admin.settings_transaction import SettingsTransaction
@@ -176,6 +194,7 @@ class LicenseAdminWindow(QMainWindow):
         self._operation_continuation: Callable[[], None] | None = None
         self._local_revision = 0
         self._records: list[LicenseRecord] = []
+        self._revocations: tuple[RevocationEntry, ...] = ()
         self._data_state = ProjectDataState.EMPTY
         self._data_state_detail = ""
         self._set_project_identity()
@@ -787,6 +806,8 @@ class LicenseAdminWindow(QMainWindow):
             "unsynced": "sync.unsynced",
             "dirty": "sync.dirty",
             "synced": "sync.synced",
+            "revocation_pending": "sync.revocation_pending",
+            "revoked_pending": "sync.revoked_pending",
         }.get(state, "sync.unsynced")
         self.sync_badge.setText(text(key))
         self.sync_badge.setProperty("synced", state == "synced")
@@ -1195,6 +1216,7 @@ class LicenseAdminWindow(QMainWindow):
     def _load_local(self, *, show_missing: bool) -> None:
         result = load_project_records(self._settings)
         self._records = list(result.records)
+        self._revocations = result.revocations
         self._advance_local_revision()
         self._data_state = result.state
         self._data_state_detail = result.detail
@@ -1221,18 +1243,35 @@ class LicenseAdminWindow(QMainWindow):
         allow_busy: bool = False,
     ) -> tuple[LicenseRecord, ...] | None:
         """Persist a candidate snapshot before publishing it to the UI state."""
+        committed = self._commit_license_state(
+            transaction,
+            self._revocations,
+            allow_busy=allow_busy,
+        )
+        return committed.records if committed is not None else None
+
+    def _commit_license_state(
+        self,
+        transaction: RecordTransaction,
+        revocations: tuple[RevocationEntry, ...],
+        *,
+        allow_busy: bool = False,
+    ) -> LicenseStateSnapshot | None:
+        """Persist active rows and tombstones before swapping UI state."""
         if self._busy and not allow_busy:
             return None
         if not self._ensure_data_writable():
             return None
         try:
-            snapshot = transaction.commit(
-                LicenseRepository(self._settings.local_csv_path)
+            snapshot = LicenseStateTransaction(transaction, revocations).commit(
+                LicenseRepository(self._settings.local_csv_path),
+                RevocationRepository.beside(self._settings.local_csv_path),
             )
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("data.save_failed"), str(exc))
             return None
-        self._records = list(snapshot)
+        self._records = list(snapshot.records)
+        self._revocations = snapshot.revocations
         self._advance_local_revision()
         self._data_state = (
             ProjectDataState.READY if self._records else ProjectDataState.EMPTY
@@ -1240,9 +1279,21 @@ class LicenseAdminWindow(QMainWindow):
         self._data_state_detail = ""
         self._update_data_state_banner()
         self._update_action_states()
-        self._set_sync_badge("dirty")
+        self._set_pending_sync_badge()
         self._refresh_view()
         return snapshot
+
+    def _set_pending_sync_badge(self) -> None:
+        if any(
+            entry.phase is RevocationPhase.PENDING for entry in self._revocations
+        ):
+            self._set_sync_badge("revocation_pending")
+        elif any(
+            entry.phase is RevocationPhase.REVOKED for entry in self._revocations
+        ):
+            self._set_sync_badge("revoked_pending")
+        else:
+            self._set_sync_badge("dirty")
 
     def _ensure_data_writable(self) -> bool:
         if self._data_state.allows_writes:
@@ -1519,16 +1570,27 @@ class LicenseAdminWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        try:
+            revocations = request_revocation(self._revocations, record)
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("data.save_failed"), str(exc))
+            return
         transaction = RecordTransaction.revoke(self._records, record.hwid)
-        if self._commit_records(transaction) is not None:
-            self._notify(text("license.revoked"))
+        if self._commit_license_state(transaction, revocations) is not None:
+            self._notify(text("license.revocation_pending"), tone="info")
 
     def _show_details(self) -> None:
         record = self._selected_record()
         if record is not None:
             RecordDetailsDialog(self, record).exec()
 
-    def _merge_imported(self, imported: list[LicenseRecord], source_name: str) -> bool:
+    def _merge_imported(
+        self,
+        imported: list[LicenseRecord],
+        source_name: str,
+        *,
+        feed: FeedDocument | None = None,
+    ) -> bool:
         if self._busy:
             return False
         if not self._ensure_data_writable():
@@ -1538,7 +1600,7 @@ class LicenseAdminWindow(QMainWindow):
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("import.failed"), str(exc))
             return False
-        if not imported:
+        if not imported and (feed is None or not feed.tombstones):
             self._notify(text("import.empty"), tone="info")
             return True
         box = QMessageBox(self)
@@ -1559,7 +1621,24 @@ class LicenseAdminWindow(QMainWindow):
             transaction = RecordTransaction.sorted_records(imported)
         else:
             return False
-        if self._commit_records(transaction) is not None:
+        revocations = self._revocations
+        if feed is not None:
+            manifest = feed.manifest
+            if manifest is None:
+                raise RuntimeError("Verified imported feed has no manifest.")
+            revocations = merge_published_tombstones(
+                revocations,
+                feed.tombstones,
+                revision=manifest.revision,
+                published_at=manifest.generated_at,
+            )
+            revoked_hwids = {entry.hwid for entry in revocations}
+            transaction = RecordTransaction.sorted_records(
+                record
+                for record in transaction.snapshot
+                if record.hwid not in revoked_hwids
+            )
+        if self._commit_license_state(transaction, revocations) is not None:
             self._notify(text("import.imported", count=len(imported)))
             return True
         return False
@@ -1575,11 +1654,30 @@ class LicenseAdminWindow(QMainWindow):
         if not filename:
             return
         try:
-            imported = parse_signed_csv(Path(filename).read_text(encoding="utf-8-sig"))
+            content = Path(filename).read_text(encoding="utf-8-sig")
+            feed = parse_feed_csv(content, allow_legacy=True)
+            if feed.manifest_token:
+                public_keys, issuer, audience = self._verification_values()
+                feed = verify_feed(
+                    feed,
+                    public_keys,
+                    expected_issuer=issuer,
+                    expected_audience=audience,
+                )
+                imported = self._verify_pulled_records(
+                    feed.records,
+                    (public_keys, issuer, audience),
+                )
+            else:
+                imported = list(feed.records)
         except (OSError, UnicodeError, LicenseIssueError) as exc:
             QMessageBox.critical(self, text("import.failed"), str(exc))
             return
-        self._merge_imported(imported, Path(filename).name)
+        self._merge_imported(
+            imported,
+            Path(filename).name,
+            feed=feed if feed.manifest_token else None,
+        )
 
     def _import_legacy(self) -> None:
         if self._busy:
@@ -1621,13 +1719,34 @@ class LicenseAdminWindow(QMainWindow):
         )
         if not filename:
             return
+        signing_key = self._load_signing_key()
+        if signing_key is None:
+            return
+        export_key = f"feed/{self._settings.project_id}/export-revision"
         try:
-            Path(filename).write_text(
-                serialize_signed_csv(self._records), encoding="utf-8", newline=""
+            stored_revision = int(str(self._qsettings.value(export_key, 0)))
+        except (TypeError, ValueError):
+            stored_revision = 0
+        published_revisions = [
+            entry.published_revision or 0 for entry in self._revocations
+        ]
+        revision = max([stored_revision, *published_revisions]) + 1
+        try:
+            feed = sign_feed(
+                self._records,
+                self._local_tombstones(),
+                signing_key,
+                revision=revision,
+                issuer=self._settings.issuer,
+                audience=self._settings.audience,
             )
-        except OSError as exc:
+            Path(filename).write_text(
+                serialize_feed_csv(feed), encoding="utf-8", newline=""
+            )
+        except (OSError, LicenseIssueError) as exc:
             QMessageBox.critical(self, text("export.failed"), str(exc))
             return
+        self._qsettings.setValue(export_key, revision)
         self._notify(text("export.done", count=len(self._records)))
 
     def _sheet_client(
@@ -1638,6 +1757,15 @@ class LicenseAdminWindow(QMainWindow):
 
     def _advance_local_revision(self) -> None:
         self._local_revision += 1
+
+    def _local_tombstones(self) -> tuple[FeedTombstone, ...]:
+        return tuple(entry.tombstone() for entry in self._revocations)
+
+    def _local_publication_digest(self) -> str:
+        return publication_content_digest(
+            self._records,
+            self._local_tombstones(),
+        )
 
     def _sheet_target(self, config: GoogleSheetsConfig) -> SyncTarget:
         return SyncTarget(
@@ -1660,7 +1788,7 @@ class LicenseAdminWindow(QMainWindow):
         return LocalSyncContext(
             target=target,
             revision=self._local_revision,
-            digest=records_digest(self._records),
+            digest=self._local_publication_digest(),
         )
 
     def _sync_context_is_current(self, context: LocalSyncContext) -> bool:
@@ -1676,7 +1804,7 @@ class LicenseAdminWindow(QMainWindow):
         return (
             target == context.target
             and self._local_revision == context.revision
-            and records_digest(self._records) == context.digest
+            and self._local_publication_digest() == context.digest
         )
 
     @staticmethod
@@ -1698,12 +1826,90 @@ class LicenseAdminWindow(QMainWindow):
     ) -> None:
         document = {
             "digest": snapshot.digest,
+            "content_digest": snapshot.publication_digest,
             "revision": self._revision_document(snapshot.revision),
+            "manifest_revision": (
+                snapshot.manifest.revision if snapshot.manifest is not None else None
+            ),
         }
+        if snapshot.manifest is not None:
+            self._store_manifest_revision(
+                target,
+                snapshot.manifest.revision,
+                snapshot.publication_digest,
+            )
         self._qsettings.setValue(
             target.settings_key,
             json.dumps(document, separators=(",", ":"), sort_keys=True),
         )
+
+    @staticmethod
+    def _manifest_revision_key(target: SyncTarget) -> str:
+        return f"{target.settings_key}/manifest-revision"
+
+    @staticmethod
+    def _manifest_digest_key(target: SyncTarget) -> str:
+        return f"{target.settings_key}/manifest-content-digest"
+
+    def _minimum_manifest_revision(self, target: SyncTarget) -> int:
+        raw = self._qsettings.value(self._manifest_revision_key(target), 0)
+        try:
+            revision = int(str(raw))
+        except (TypeError, ValueError):
+            return 0
+        return max(0, revision)
+
+    def _accepted_manifest_digest(self, target: SyncTarget) -> str:
+        value = str(self._qsettings.value(self._manifest_digest_key(target), ""))
+        return value if len(value) == 64 else ""
+
+    def _assert_manifest_not_equivocated(
+        self,
+        target: SyncTarget,
+        revision: int,
+        content_digest: str,
+    ) -> None:
+        minimum = self._minimum_manifest_revision(target)
+        previous_digest = self._accepted_manifest_digest(target)
+        if revision == minimum and previous_digest and previous_digest != content_digest:
+            raise LicenseIssueError(
+                "Feed equivocation rejected: the accepted revision has different content."
+            )
+
+    def _store_manifest_revision(
+        self,
+        target: SyncTarget,
+        revision: int,
+        content_digest: str,
+    ) -> None:
+        minimum = self._minimum_manifest_revision(target)
+        if revision < minimum:
+            raise LicenseIssueError(
+                f"Feed rollback rejected: revision {revision} is older than {minimum}."
+            )
+        self._assert_manifest_not_equivocated(target, revision, content_digest)
+        self._qsettings.setValue(
+            self._manifest_revision_key(target),
+            max(minimum, revision),
+        )
+        self._qsettings.setValue(
+            self._manifest_digest_key(target),
+            content_digest,
+        )
+        self._qsettings.sync()
+        if self._qsettings.status() != QSettings.Status.NoError:
+            raise LicenseIssueError("Unable to persist the accepted feed revision.")
+
+    def _remote_content_baseline(self, target: SyncTarget) -> str | None:
+        raw = str(self._qsettings.value(target.settings_key, ""))
+        if not raw:
+            return None
+        try:
+            document = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        value = document.get("content_digest") if isinstance(document, dict) else None
+        return value if isinstance(value, str) else None
 
     def _remote_baseline(
         self,
@@ -1778,6 +1984,7 @@ class LicenseAdminWindow(QMainWindow):
         first_push: bool = False,
         baseline_changed: bool = False,
         guard_mismatch: bool = False,
+        tombstone_count: int = 0,
     ) -> bool:
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning if diff.removed else QMessageBox.Icon.Question)
@@ -1802,6 +2009,10 @@ class LicenseAdminWindow(QMainWindow):
             warnings.append(text("sheet.preview_remote_changed"))
         if guard_mismatch:
             warnings.append(text("sheet.preview_manual_change"))
+        if tombstone_count:
+            warnings.append(
+                text("sheet.preview_tombstones", count=tombstone_count)
+            )
         if warnings:
             box.setInformativeText("\n\n".join(warnings))
         box.setDetailedText(self._sync_diff_details(diff))
@@ -1847,6 +2058,88 @@ class LicenseAdminWindow(QMainWindow):
             )
         return verified
 
+    def _verify_remote_feed(
+        self,
+        snapshot: RemoteSnapshot,
+        verification: tuple[tuple[bytes, ...], str, str],
+        target: SyncTarget,
+        *,
+        minimum_revision: int,
+        require_manifest: bool,
+        require_fresh: bool = True,
+    ) -> RemoteSnapshot:
+        public_keys, issuer, audience = verification
+        if not snapshot.manifest_token:
+            if require_manifest:
+                raise LicenseIssueError(
+                    "The remote license feed has no signed v2 manifest."
+                )
+            return snapshot
+        if snapshot.revision is None or not snapshot.guard_matches_data:
+            raise LicenseIssueError(
+                "The signed feed is missing its matching Sheet revision guard."
+            )
+        verified_feed = verify_feed(
+            FeedDocument(
+                snapshot.records,
+                snapshot.tombstones,
+                snapshot.manifest_token,
+            ),
+            public_keys,
+            expected_issuer=issuer,
+            expected_audience=audience,
+            minimum_revision=minimum_revision,
+            require_fresh=require_fresh,
+        )
+        manifest = verified_feed.manifest
+        if manifest is None or manifest.revision != snapshot.revision.generation:
+            raise LicenseIssueError(
+                "The signed manifest revision does not match the Sheet revision."
+            )
+        self._assert_manifest_not_equivocated(
+            target,
+            manifest.revision,
+            publication_content_digest(
+                verified_feed.records,
+                verified_feed.tombstones,
+            ),
+        )
+        verified_records = self._verify_pulled_records(
+            verified_feed.records,
+            verification,
+        )
+        return replace(
+            snapshot,
+            records=tuple(verified_records),
+            tombstones=verified_feed.tombstones,
+            manifest=manifest,
+        )
+
+    def _verify_public_feed(
+        self,
+        document: FeedDocument,
+        verification: tuple[tuple[bytes, ...], str, str],
+        target: SyncTarget,
+        *,
+        minimum_revision: int,
+    ) -> FeedDocument:
+        public_keys, issuer, audience = verification
+        verified = verify_feed(
+            document,
+            public_keys,
+            expected_issuer=issuer,
+            expected_audience=audience,
+            minimum_revision=minimum_revision,
+        )
+        assert verified.manifest is not None
+        self._assert_manifest_not_equivocated(
+            target,
+            verified.manifest.revision,
+            publication_content_digest(verified.records, verified.tombstones),
+        )
+        records = self._verify_pulled_records(verified.records, verification)
+        return replace(verified, records=tuple(records))
+
     def _pull_sheet(self) -> None:
         if self._busy or not self._ensure_data_writable():
             return
@@ -1868,17 +2161,25 @@ class LicenseAdminWindow(QMainWindow):
             target = self._sheet_target(config)
         context = self._local_sync_context(target)
         local_snapshot = tuple(self._records)
+        minimum_revision = self._minimum_manifest_revision(target)
 
-        def operation() -> RemoteSnapshot | tuple[list[LicenseRecord], str]:
+        def operation() -> RemoteSnapshot | FeedDocument:
             if public_url:
-                records = self._verify_pulled_records(
-                    download_public_records(public_url), verification
+                return self._verify_public_feed(
+                    download_public_feed(public_url),
+                    verification,
+                    target,
+                    minimum_revision=minimum_revision,
                 )
-                return records, records_digest(records)
             assert config is not None
             remote = self._sheet_client(config).read_snapshot()
-            verified = self._verify_pulled_records(remote.records, verification)
-            return replace(remote, records=tuple(verified))
+            return self._verify_remote_feed(
+                remote,
+                verification,
+                target,
+                minimum_revision=minimum_revision,
+                require_manifest=True,
+            )
 
         def complete(result: Any) -> None:
             if not self._sync_context_is_current(context):
@@ -1891,18 +2192,24 @@ class LicenseAdminWindow(QMainWindow):
                 baseline_changed, guard_mismatch = self._observe_remote_preview(
                     target, remote
                 )
-            else:
-                records, _digest = result
+            elif isinstance(result, FeedDocument):
                 remote = None
-                remote_records = tuple(records)
+                remote_records = result.records
                 baseline_changed = False
                 guard_mismatch = False
+            else:
+                raise RuntimeError("Unexpected feed preview result.")
             diff = build_sync_diff(remote_records, local_snapshot)
             if not self._confirm_sync_preview(
                 SyncDirection.PULL,
                 diff,
                 baseline_changed=baseline_changed,
                 guard_mismatch=guard_mismatch,
+                tombstone_count=(
+                    len(remote.tombstones)
+                    if remote is not None
+                    else len(result.tombstones)
+                ),
             ):
                 return
             self._queue_after_operation(
@@ -1910,9 +2217,7 @@ class LicenseAdminWindow(QMainWindow):
                     context=context,
                     reviewed=remote,
                     reviewed_public=(
-                        (list(remote_records), records_digest(remote_records))
-                        if remote is None
-                        else None
+                        result if isinstance(result, FeedDocument) else None
                     ),
                     config=config,
                     public_url=public_url,
@@ -1927,7 +2232,7 @@ class LicenseAdminWindow(QMainWindow):
         *,
         context: LocalSyncContext,
         reviewed: RemoteSnapshot | None,
-        reviewed_public: tuple[list[LicenseRecord], str] | None,
+        reviewed_public: FeedDocument | None,
         config: GoogleSheetsConfig | None,
         public_url: str,
         verification: tuple[tuple[bytes, ...], str, str],
@@ -1936,57 +2241,100 @@ class LicenseAdminWindow(QMainWindow):
             self._set_sync_badge("dirty")
             return
         self._set_sync_badge("dirty")
+        minimum_revision = self._minimum_manifest_revision(context.target)
 
-        def operation() -> RemoteSnapshot | tuple[list[LicenseRecord], str]:
+        def operation() -> RemoteSnapshot | FeedDocument:
             if public_url:
-                records = self._verify_pulled_records(
-                    download_public_records(public_url), verification
+                current = self._verify_public_feed(
+                    download_public_feed(public_url),
+                    verification,
+                    context.target,
+                    minimum_revision=minimum_revision,
                 )
-                digest = records_digest(records)
-                if reviewed_public is None or digest != reviewed_public[1]:
+                if (
+                    reviewed_public is None
+                    or feed_digest(current) != feed_digest(reviewed_public)
+                ):
                     raise SheetConflictError(
                         "The public CSV changed after the sync preview."
                     )
-                return records, digest
+                return current
             if config is None or reviewed is None:
                 raise RuntimeError("Missing authenticated Sheet preview.")
-            current = self._sheet_client(config).read_snapshot()
+            remote_current = self._sheet_client(config).read_snapshot()
             if (
-                current.digest != reviewed.digest
-                or current.revision != reviewed.revision
+                remote_current.digest != reviewed.digest
+                or remote_current.revision != reviewed.revision
             ):
                 raise SheetConflictError(
                     "The Google Sheet changed after the sync preview."
                 )
-            verified = self._verify_pulled_records(current.records, verification)
-            return replace(current, records=tuple(verified))
+            return self._verify_remote_feed(
+                remote_current,
+                verification,
+                context.target,
+                minimum_revision=minimum_revision,
+                require_manifest=True,
+            )
 
         def complete(result: Any) -> None:
             if not self._sync_context_is_current(context):
                 self._set_sync_badge("dirty")
                 self._notify(text("sheet.local_changed"), tone="info")
                 return
-            if isinstance(result, RemoteSnapshot):
-                records = list(result.records)
-            else:
-                records = list(result[0])
+            if not isinstance(result, (RemoteSnapshot, FeedDocument)):
+                raise RuntimeError("Unexpected feed pull result.")
+            manifest = result.manifest
+            if manifest is None:
+                raise RuntimeError("Verified feed has no manifest.")
+            revocations = merge_published_tombstones(
+                self._revocations,
+                result.tombstones,
+                revision=manifest.revision,
+                published_at=manifest.generated_at,
+            )
+            revoked_hwids = {entry.hwid for entry in revocations}
+            records = [
+                record for record in result.records if record.hwid not in revoked_hwids
+            ]
             transaction = RecordTransaction.sorted_records(records)
-            committed = self._commit_records(transaction, allow_busy=True)
+            committed = self._commit_license_state(
+                transaction,
+                revocations,
+                allow_busy=True,
+            )
             if committed is None:
                 return
             if isinstance(result, RemoteSnapshot):
                 self._store_remote_baseline(context.target, result)
                 if result.revision is not None and result.guard_matches_data:
-                    self._mark_synced(text("sheet.pulled", count=len(committed)))
+                    self._mark_synced(
+                        text("sheet.pulled", count=len(committed.records)),
+                        expected_content_digest=result.publication_digest,
+                    )
                 else:
                     self._set_sync_badge("dirty")
                     self._notify(
-                        text("sheet.pulled_unversioned", count=len(committed)),
+                        text(
+                            "sheet.pulled_unversioned",
+                            count=len(committed.records),
+                        ),
                         tone="info",
                     )
             else:
-                self._set_sync_badge("dirty")
-                self._notify(text("sheet.pulled_public", count=len(committed)))
+                remote_content_digest = publication_content_digest(
+                    result.records,
+                    result.tombstones,
+                )
+                self._store_manifest_revision(
+                    context.target,
+                    manifest.revision,
+                    remote_content_digest,
+                )
+                self._mark_synced(
+                    text("sheet.pulled_public", count=len(committed.records)),
+                    expected_content_digest=remote_content_digest,
+                )
 
         self._run_operation(text("sheet.pulling"), operation, complete)
 
@@ -2017,9 +2365,15 @@ class LicenseAdminWindow(QMainWindow):
             )
             self._show_settings()
             return
+        try:
+            verification = self._verification_values()
+        except LicenseIssueError as exc:
+            QMessageBox.critical(self, text("sheet.sync_failed"), str(exc))
+            return
         target = self._sheet_target(config)
         context = self._local_sync_context(target)
         local_snapshot = tuple(self._records)
+        minimum_revision = self._minimum_manifest_revision(target)
 
         def operation() -> RemoteSnapshot:
             return self._sheet_client(config).read_snapshot()
@@ -2030,8 +2384,18 @@ class LicenseAdminWindow(QMainWindow):
             if not self._sync_context_is_current(context):
                 self._set_sync_badge("dirty")
                 return
+            remote = self._verify_remote_feed(
+                remote,
+                verification,
+                target,
+                minimum_revision=minimum_revision,
+                require_manifest=False,
+                require_fresh=False,
+            )
             baseline = self._remote_baseline(target)
-            first_push = baseline is None and bool(remote.records)
+            first_push = baseline is None and bool(
+                remote.records or remote.tombstones
+            )
             baseline_changed, guard_mismatch = self._observe_remote_preview(
                 target, remote
             )
@@ -2042,6 +2406,7 @@ class LicenseAdminWindow(QMainWindow):
                 first_push=first_push,
                 baseline_changed=baseline_changed,
                 guard_mismatch=guard_mismatch,
+                tombstone_count=len(self._revocations),
             ):
                 return
             self._queue_after_operation(
@@ -2066,23 +2431,70 @@ class LicenseAdminWindow(QMainWindow):
         if not self._sync_context_is_current(context):
             self._set_sync_badge("dirty")
             return
-        self._set_sync_badge("dirty")
+        signing_key = self._load_signing_key()
+        if signing_key is None:
+            return
+        prepared_revocations = mark_revoked(self._revocations)
+        if prepared_revocations != self._revocations:
+            committed = self._commit_license_state(
+                RecordTransaction.sorted_records(records),
+                prepared_revocations,
+            )
+            if committed is None:
+                return
+        publish_context = self._local_sync_context(context.target)
+        tombstones = self._local_tombstones()
+        issuer = self._settings.issuer
+        audience = self._settings.audience
+        minimum_revision = self._minimum_manifest_revision(context.target)
+        self._set_pending_sync_badge()
 
         def operation() -> RemoteSnapshot:
             return self._sheet_client(config).publish_records(
                 records,
+                tombstones=tombstones,
+                signing_key=signing_key,
+                issuer=issuer,
+                audience=audience,
                 expected_revision=reviewed.revision,
                 expected_digest=reviewed.digest,
+                minimum_revision=minimum_revision,
             )
 
         def complete(remote: Any) -> None:
             if not isinstance(remote, RemoteSnapshot):
                 raise RuntimeError("Unexpected Sheet publish result.")
-            self._store_remote_baseline(context.target, remote)
-            if self._sync_context_is_current(context):
-                self._mark_synced(text("sheet.synced", count=len(records)))
-            else:
+            if not self._sync_context_is_current(publish_context):
                 self._set_sync_badge("dirty")
+                self._notify(text("sheet.local_changed"), tone="info")
+                return
+            manifest = remote.manifest
+            if manifest is None:
+                raise RuntimeError("Published Sheet returned no verified manifest.")
+            published_revocations = mark_published(
+                self._revocations,
+                revision=manifest.revision,
+                published_at=manifest.generated_at,
+            )
+            acknowledged = self._commit_license_state(
+                RecordTransaction.sorted_records(records),
+                published_revocations,
+                allow_busy=True,
+            )
+            if acknowledged is None:
+                return
+            self._store_remote_baseline(context.target, remote)
+            if self._local_publication_digest() == remote.publication_digest:
+                self._mark_synced(
+                    text(
+                        "sheet.published",
+                        licenses=len(records),
+                        revoked=len(tombstones),
+                        revision=manifest.revision,
+                    )
+                )
+            else:
+                self._set_pending_sync_badge()
                 self._notify(text("sheet.local_changed"), tone="info")
 
         self._run_operation(text("sheet.syncing"), operation, complete)
@@ -2241,6 +2653,12 @@ class LicenseAdminWindow(QMainWindow):
             self.data_state_banner.open_folder_button.setEnabled(idle)
 
     def _refresh_sync_badge_from_baseline(self) -> None:
+        if any(
+            entry.phase is not RevocationPhase.PUBLISHED
+            for entry in self._revocations
+        ):
+            self._set_pending_sync_badge()
+            return
         try:
             target = self._sheet_target(self._settings.sheets_config())
         except LicenseIssueError:
@@ -2252,13 +2670,33 @@ class LicenseAdminWindow(QMainWindow):
         elif (
             baseline[1] is not None
             and baseline[1].digest == baseline[0]
-            and baseline[0] == records_digest(self._records)
+            and self._remote_content_baseline(target)
+            == self._local_publication_digest()
         ):
             self._set_sync_badge("synced")
         else:
             self._set_sync_badge("dirty")
 
-    def _mark_synced(self, message: str) -> None:
+    def _mark_synced(
+        self,
+        message: str,
+        *,
+        expected_content_digest: str | None = None,
+    ) -> None:
+        if any(
+            entry.phase is not RevocationPhase.PUBLISHED
+            for entry in self._revocations
+        ):
+            self._set_pending_sync_badge()
+            self._notify(message, tone="info")
+            return
+        if (
+            expected_content_digest is not None
+            and self._local_publication_digest() != expected_content_digest
+        ):
+            self._set_sync_badge("dirty")
+            self._notify(text("sheet.local_tombstones_pending"), tone="info")
+            return
         self._set_sync_badge("synced")
         self._notify(message)
 
