@@ -2,11 +2,17 @@ services:
   license-admin:
     build:
       context: .
+      target: runtime
     environment:
       ACTIVO_VNC_PASSWORD: ${ACTIVO_VNC_PASSWORD:?Set ACTIVO_VNC_PASSWORD in .env}
       ACTIVO_SCREEN: ${ACTIVO_SCREEN:-1440x900x24}
     ports:
-      - "${ACTIVO_PORT:-6080}:6080"
+      - "127.0.0.1:${ACTIVO_PORT:-6080}:6080"
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m,mode=1777
     restart: unless-stopped
     shm_size: "256mb"
     volumes:

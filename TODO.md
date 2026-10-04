@@ -1,30 +1,3 @@
-### 8. Docker configuration không nên đưa ra Internet
-
-Cấu hình hiện tại bind cổng `6080` rộng và có thể chạy noVNC không password khi biến môi trường không được đặt tại [docker-compose.yml](D:/Projects/activo/docker-compose.yml:5) và [start-desktop.sh](D:/Projects/activo/docker/start-desktop.sh:34).
-
-Không nên coi đây là production deployment:
-
-- Fail closed nếu thiếu password.
-- Bind localhost mặc định.
-- Dùng TLS/reverse proxy.
-- Không dùng desktop/noVNC như backend multi-user.
-- Pin base image bằng digest và tách dev dependency khỏi runtime image.
-
----
-
-## Đánh giá UI/UX chi tiết
-
-### Những phần đã làm tốt
-
-- Dark theme có visual hierarchy rõ.
-- Header controls khá đồng nhất về chiều cao.
-- Sidebar, metric cards và table có density hợp lý cho admin desktop.
-- Status dùng cả text và màu, không chỉ phụ thuộc màu.
-- About/Policy/Terms đã dùng chung một modal shell khá ổn.
-- Contact chỉ xuất hiện trong About là đúng.
-- Tab order chính tương đối logic.
-- Code đã có một số component tái sử dụng tốt như `ProjectSelector`, `PopoverSelect`, `ThemeToggle`, `InformationDialog`.
-
 ### Ba button About/Policy/Terms vẫn chưa phải pattern tốt
 
 Nhóm ba icon nhìn giống segmented selector hoặc mode switch, trong khi đây là ba action độc lập. Chúng cũng tiêu tốn không gian header và sẽ khó scale nếu sau này thêm Help, Changelog, Diagnostics hoặc Updates.

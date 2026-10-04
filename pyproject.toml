@@ -10,6 +10,7 @@ files = [
     "migrate_license_csv.py",
     "license_admin",
     "tools/release",
+    "tools/docker",
 ]
 
 [[tool.mypy.overrides]]

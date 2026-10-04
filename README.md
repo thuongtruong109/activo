@@ -116,24 +116,26 @@ trước khi lưu settings.
 
 ## Self-host bằng Docker
 
-Docker chạy ứng dụng desktop trong màn hình ảo và cung cấp giao diện qua noVNC,
-do đó chỉ cần trình duyệt để sử dụng:
+Docker chỉ dành cho desktop riêng của **một người vận hành tin cậy**, không phải
+backend production/multi-user và không được public noVNC ra Internet. Xem
+[hướng dẫn bảo mật Docker, TLS proxy và backup](docs/DOCKER_DESKTOP.md).
 
 ```powershell
-Copy-Item .env.example .env
-# Sửa ACTIVO_VNC_PASSWORD trong .env trước khi chạy
+if (-not (Test-Path -LiteralPath .env)) { Copy-Item .env.example .env }
+# Điền password VNC đúng 8 ký tự ASCII ngẫu nhiên, không có dấu cách.
 docker compose up -d --build
 ```
 
-Mở `http://localhost:6080/vnc.html?autoconnect=1&resize=scale`, sau đó nhập mật
+Mở `http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=scale`, sau đó nhập mật
 khẩu trong `.env`. Có thể đổi cổng bằng `ACTIVO_PORT` và độ phân giải bằng
-`ACTIVO_SCREEN`.
+`ACTIVO_SCREEN`. Bind host luôn là localhost; thiếu/rỗng/sai định dạng password
+thì image từ chối chạy. VNC chỉ dùng 8 ký tự, không thay thế TLS và xác thực mạnh
+riêng tại proxy cho truy cập từ xa qua VPN/tunnel.
 
 Volume `activo-data` giữ toàn bộ project và QSettings tại `/data`, nên rebuild
 container không làm mất key, credential, settings, CSV hoặc cache icon ngôn
-ngữ. Khi triển khai ra
-Internet, đặt dịch vụ sau reverse proxy HTTPS/firewall; không công khai trực
-tiếp cổng noVNC. Sao lưu volume này như một kho bí mật vì nó chứa private key
+ngữ. Không mở firewall/router cho 6080/5900; `docker compose down -v` sẽ xóa dữ liệu.
+Sao lưu volume này như một kho bí mật vì nó chứa private key
 và Google credential.
 
 Để tái sử dụng License Manager cho sản phẩm khác, chỉ cần tạo profile mới và

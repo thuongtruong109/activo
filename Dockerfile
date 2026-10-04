@@ -1,6 +1,16 @@
-FROM python:3.12-slim-bookworm
+FROM python:3.12.15-slim-bookworm@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3 AS dependencies
+
+WORKDIR /dependencies
+COPY requirements.txt ./
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/python -m pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements.txt
+
+FROM python:3.12.15-slim-bookworm@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3 AS runtime
+
+LABEL org.opencontainers.image.description="Single trusted-operator desktop. Not a public or multi-user backend."
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     QT_QPA_PLATFORM=xcb \
     QT_X11_NO_MITSHM=1 \
@@ -47,17 +57,18 @@ RUN groupadd --gid 10001 activo \
 
 WORKDIR /app
 
-COPY requirements.txt pyproject.toml ./
-RUN python -m pip install --no-cache-dir --require-hashes -r requirements.txt
-
-COPY . .
+COPY --from=dependencies /opt/venv /opt/venv
+# Deliberate allowlist: no build/test tools, project secrets or mutable host data.
+COPY license_admin/ ./license_admin/
+COPY issue_license.py migrate_license_csv.py ./
+COPY docker/entrypoint.sh docker/start-desktop.sh ./docker/
 RUN chmod +x /app/docker/entrypoint.sh /app/docker/start-desktop.sh
 
 EXPOSE 6080
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6080/vnc.html', timeout=3)" || exit 1
+    CMD python -m license_admin.container_runtime.healthcheck
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
 CMD ["/app/docker/start-desktop.sh"]

@@ -1,0 +1,31 @@
+name: Private Docker desktop checks
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build runtime-only image (never push or deploy)
+        run: docker build --target runtime --tag activo-desktop-check .
+      - name: Unit tests inside Linux runtime
+        run: >-
+          docker run --rm --network none --entrypoint python
+          --mount type=bind,source="$PWD/tests",target=/checks/tests,readonly
+          --workdir /checks --env PYTHONPATH=/app:/checks
+          activo-desktop-check -m unittest tests.test_container_runtime
+      - name: Isolated Compose, desktop and TLS/WebSocket checks
+        run: >-
+          python3 -m tools.docker.check_runtime --image activo-desktop-check
+          --proxy-image nginx:1.30.5-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
