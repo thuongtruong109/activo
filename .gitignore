@@ -4,11 +4,14 @@ __pycache__/
 .pytest_cache/
 pytest-cache-files-*/
 .venv/
+.venv-release/
 dist/
 build/
 tmp/
 *.tmp
 .env
+*.pfx
+*.p12
 
 # Publisher secrets and mutable license data
 projects/*/private*.pem

@@ -1,0 +1,3 @@
+# Windows x64 bootstrap tool; PyPI wheel SHA-256, not part of app runtime.
+--only-binary=:all:
+uv==0.11.27 --hash=sha256:e20f25921ed4c46d32ac18a9b2e610c0384439fd367f647f2b68e0e1d90e9885

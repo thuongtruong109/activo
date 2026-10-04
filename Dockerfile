@@ -48,7 +48,7 @@ RUN groupadd --gid 10001 activo \
 WORKDIR /app
 
 COPY requirements.txt pyproject.toml ./
-RUN python -m pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements.txt
 
 COPY . .
 RUN chmod +x /app/docker/entrypoint.sh /app/docker/start-desktop.sh

@@ -1,22 +1,3 @@
-### 7. Binary chưa đạt chuẩn phát hành Windows
-
-Bản build PyInstaller chạy thành công, nhưng:
-
-- `LicenseAdmin.exe` hiện **NotSigned**.
-- Windows VersionInfo trống: ProductName, CompanyName, FileVersion, ProductVersion, Copyright.
-- Không có quy trình installer, update hoặc rollback.
-- Dependency chưa lock reproducibly.
-- Không thấy CI release, SBOM hoặc third-party notice.
-
-Trước release cần:
-
-- Nhúng multi-resolution `.ico` vào EXE/installer. Taskbar và Explorer phải dùng asset local được đóng gói, không thể phụ thuộc URL Icons8 lúc runtime.
-- Thêm VersionInfo và application version.
-- Ký EXE/installer bằng SHA-256 và trusted timestamp theo [Microsoft SignTool](https://learn.microsoft.com/windows/win32/seccrypto/signtool) và [Authenticode timestamping](https://learn.microsoft.com/en-us/windows/win32/seccrypto/time-stamping-authenticode-signatures).
-- Lock dependency; PyPA đã có specification cho [reproducible lock files](https://packaging.python.org/en/latest/specifications/pylock-toml/).
-- Sinh checksum và SBOM cho từng release.
-- Test clean install, upgrade, downgrade và uninstall.
-
 ### 8. Docker configuration không nên đưa ra Internet
 
 Cấu hình hiện tại bind cổng `6080` rộng và có thể chạy noVNC không password khi biến môi trường không được đặt tại [docker-compose.yml](D:/Projects/activo/docker-compose.yml:5) và [start-desktop.sh](D:/Projects/activo/docker/start-desktop.sh:34).

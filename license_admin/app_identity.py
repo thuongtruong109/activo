@@ -10,9 +10,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication
 
+from license_admin.version import (
+    APP_DISPLAY_NAME as APP_DISPLAY_NAME,
+    APP_VERSION as APP_VERSION,
+)
 
-APP_DISPLAY_NAME = "License Admin"
-APP_VERSION = "1.0.0"
 SUPPORT_EMAIL = "thuongtruongofficial@gmail.com"
 WINDOWS_APP_USER_MODEL_ID = "LicenseTools.LicenseAdmin"
 ASSET_DIRECTORY = Path(__file__).with_name("assets")
@@ -53,4 +55,5 @@ def configure_process_identity() -> None:
 def configure_application_identity(app: QApplication) -> None:
     """Apply the shared display name and icon before any windows are created."""
     app.setApplicationDisplayName(APP_DISPLAY_NAME)
+    app.setApplicationVersion(APP_VERSION)
     app.setWindowIcon(app_icon())

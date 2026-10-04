@@ -1,0 +1,4 @@
+# Runtime dependencies. Update the locks explicitly with tools/release/lock.ps1.
+PySide6==6.11.1
+cryptography==50.0.2
+requests==2.34.2

@@ -11,7 +11,7 @@ cần thống nhất public key, issuer, audience và định dạng feed đã p
 ## Chạy ứng dụng
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.txt
 python -m license_admin
 ```
 
@@ -20,9 +20,11 @@ Trên Windows có thể double-click `run_license_admin.cmd` hoặc
 
 ### Build file EXE trên Windows
 
-```powershell
-python -m PyInstaller --noconfirm --clean license_admin.spec
-```
+Xem [quy trình release Windows](docs/WINDOWS_RELEASE.md) để tạo môi trường đã lock,
+build EXE/installer, ký Authenticode, sinh checksum/SBOM và kiểm tra update/rollback.
+Build thử nghiệm không ký phải chọn rõ `-Unsigned`; bản production yêu cầu
+certificate và trusted timestamp. Không phát hành trực tiếp output PyInstaller
+chưa đi qua các bước kiểm tra này.
 
 File `dist/LicenseAdmin.exe` dùng cùng logo với header, cửa sổ, modal, taskbar
 và icon hiển thị trong File Explorer. Trên Windows, dữ liệu mutable mặc định

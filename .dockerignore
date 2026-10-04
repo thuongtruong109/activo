@@ -3,10 +3,13 @@
 .mypy_cache
 .pytest_cache
 .venv
+.venv-release
 __pycache__
 *.py[cod]
 *.tmp
 .env
+*.pfx
+*.p12
 build
 dist
 projects
