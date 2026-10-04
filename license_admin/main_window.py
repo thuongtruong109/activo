@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHeaderView,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -84,6 +85,10 @@ from license_admin.feed_manifest import (
 )
 from license_admin.flag_icons import FlagIconLoader
 from license_admin.icons import svg_icon
+from license_admin.info_menu import InformationMenuButton
+from license_admin.operation_bar import OperationBar
+from license_admin.dashboard_responsive import DashboardResponsiveController
+from license_admin.responsive import fit_window_to_screen, scroll_container
 from license_admin.information_dialogs import (
     AboutDialog,
     InformationDialog,
@@ -157,8 +162,7 @@ class LicenseAdminWindow(QMainWindow):
     ) -> None:
         super().__init__()
         enable_frameless_window(self)
-        self.resize(1320, 820)
-        self.setMinimumSize(980, 640)
+        fit_window_to_screen(self, QSize(1320, 820), QSize(460, 300))
         self.setWindowIcon(app_icon())
 
         self._qsettings = qsettings or QSettings("LicenseTools", "LicenseAdmin")
@@ -166,6 +170,7 @@ class LicenseAdminWindow(QMainWindow):
         self._theme_mode = apply_theme(
             str(self._qsettings.value("ui/theme", "dark"))
         )
+        self.setProperty("themeMode", self._theme_mode)
         self._project_store = project_store or ProjectStore()
         catalog_lease = ProjectLease.acquire(self._project_store.root)
         try:
@@ -194,6 +199,9 @@ class LicenseAdminWindow(QMainWindow):
         self._qsettings.setValue("projects/active", self._settings.project_id)
         self._workers: set[OperationThread] = set()
         self._busy = False
+        self._cancellable_worker: OperationThread | None = None
+        self._operation_cancelled = False
+        self._sidebar_preferred_collapsed = False
         self._operation_continuation: Callable[[], None] | None = None
         self._local_revision = 0
         self._records: list[LicenseRecord] = []
@@ -371,6 +379,7 @@ class LicenseAdminWindow(QMainWindow):
         self.sidebar_toggle.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.sidebar_toggle.clicked.connect(self._toggle_sidebar)
         self.sidebar_header_layout.addWidget(self.sidebar_toggle)
+        self.sidebar_header_layout.addStretch(0)
         sidebar_layout.addWidget(self.sidebar_header)
 
         sidebar_content = QWidget()
@@ -402,7 +411,7 @@ class LicenseAdminWindow(QMainWindow):
             text("nav.manage_projects"), "folder-project"
         )
         self.sidebar_content_layout.addWidget(self.project_sidebar_menu)
-        sidebar_layout.addWidget(sidebar_content, 1)
+        sidebar_layout.addWidget(scroll_container(sidebar_content, name="sidebarScroll"), 1)
         shell.addWidget(self.sidebar)
 
         self.main_surface = QWidget()
@@ -414,88 +423,39 @@ class LicenseAdminWindow(QMainWindow):
         self.top_bar = DraggableFrame()
         self.top_bar.setObjectName("topBar")
         self.top_bar.setFixedHeight(APP_HEADER_HEIGHT)
-        top_bar_layout = QHBoxLayout(self.top_bar)
-        top_bar_layout.setContentsMargins(12, 8, 12, 8)
+        top_bar_layout = QGridLayout(self.top_bar)
+        self.top_bar_layout = top_bar_layout
+        top_bar_layout.setContentsMargins(12, 4, 12, 4)
         top_bar_layout.setSpacing(8)
         self.project_combo = ProjectSelector()
         self.project_combo.set_pinned_ids(self._load_pinned_project_ids())
         self.project_combo.pinned_changed.connect(self._store_pinned_project_ids)
-        top_bar_layout.addWidget(self.project_combo)
+        top_bar_layout.addWidget(self.project_combo, 0, 0)
         self.primary_action_button = QPushButton(text("action.new_license"))
         self.primary_action_button.setObjectName("primaryButton")
-        self.primary_action_button.setFixedWidth(128)
+        self.primary_action_button.setMinimumWidth(0)
+        self.primary_action_button.setAccessibleName(text("action.new_license"))
         self.primary_action_button.setFixedHeight(CONTROL_HEIGHT)
         self.primary_action_button.setIcon(svg_icon("plus-dark"))
         self.primary_action_button.setIconSize(QSize(16, 16))
         self.primary_action_button.clicked.connect(self.new_action.trigger)
-        top_bar_layout.addWidget(
-            self.primary_action_button,
-            alignment=Qt.AlignmentFlag.AlignVCenter,
-        )
-        self.busy_status = QLabel()
-        self.busy_status.setObjectName("busyStatus")
-        set_accessible_text(
-            self.busy_status,
-            name=text("accessibility.application_status"),
-        )
-        self.busy_status.hide()
-        top_bar_layout.addWidget(
-            self.busy_status,
-            alignment=Qt.AlignmentFlag.AlignVCenter,
-        )
-        top_bar_layout.addStretch(1)
-
-        self.header_info_group = QFrame()
-        self.header_info_group.setObjectName("headerInfoGroup")
-        self.header_info_group.setFixedHeight(CONTROL_HEIGHT)
-        header_info_layout = QHBoxLayout(self.header_info_group)
-        header_info_layout.setContentsMargins(1, 1, 1, 1)
-        header_info_layout.setSpacing(0)
-        self.about_button = self._header_info_button(
-            "about",
-            "info.about",
-            self._show_about,
-        )
-        self.policy_button = self._header_info_button(
-            "shield",
-            "info.policy",
-            self._show_policy,
-        )
-        self.terms_button = self._header_info_button(
-            "document",
-            "info.terms",
-            self._show_terms,
-        )
-        for index, info_button in enumerate(
-            (self.about_button, self.policy_button, self.terms_button)
-        ):
-            if index:
-                divider = QFrame()
-                divider.setObjectName("headerInfoDivider")
-                divider.setFixedSize(1, 16)
-                header_info_layout.addWidget(
-                    divider,
-                    alignment=Qt.AlignmentFlag.AlignVCenter,
-                )
-            header_info_layout.addWidget(info_button)
-        top_bar_layout.addWidget(
-            self.header_info_group,
-            alignment=Qt.AlignmentFlag.AlignVCenter,
-        )
-        top_bar_layout.addWidget(
-            self.theme_toggle,
-            alignment=Qt.AlignmentFlag.AlignVCenter,
-        )
-        top_bar_layout.addWidget(
-            self.language_selector,
-            alignment=Qt.AlignmentFlag.AlignVCenter,
-        )
+        top_bar_layout.addWidget(self.primary_action_button, 0, 1)
+        self.info_button = InformationMenuButton(self.top_bar)
+        self.info_button.about_action.triggered.connect(self._show_about)
+        self.info_button.policy_action.triggered.connect(self._show_policy)
+        self.info_button.terms_action.triggered.connect(self._show_terms)
+        top_bar_layout.addWidget(self.info_button, 0, 3)
+        top_bar_layout.addWidget(self.theme_toggle, 0, 4)
+        top_bar_layout.addWidget(self.language_selector, 0, 5)
         self.window_controls = WindowControls(self)
-        top_bar_layout.addWidget(
-            self.window_controls,
-            alignment=Qt.AlignmentFlag.AlignVCenter,
-        )
+        top_bar_layout.addWidget(self.window_controls, 0, 6)
         main_layout.addWidget(self.top_bar)
+        self.operation_bar = OperationBar()
+        self.busy_status = self.operation_bar.message_label
+        self.operation_bar.cancel_requested.connect(self._cancel_operation)
+        self.operation_bar.retry_requested.connect(self._retry_last_operation)
+        self.operation_bar.dismiss_requested.connect(self._dismiss_operation_error)
+        main_layout.addWidget(self.operation_bar)
 
         self.content_surface = QWidget()
         self.content_surface.setObjectName("contentSurface")
@@ -510,7 +470,7 @@ class LicenseAdminWindow(QMainWindow):
         )
         root.addWidget(self.data_state_banner)
 
-        self.metrics_layout = QHBoxLayout()
+        self.metrics_layout = QGridLayout()
         self.metrics_layout.setSpacing(8)
         self.total_card = MetricCard(
             text("metric.total"),
@@ -542,8 +502,8 @@ class LicenseAdminWindow(QMainWindow):
             self.expiring_card,
             self.expired_card,
         )
-        for card in self.metric_cards:
-            self.metrics_layout.addWidget(card, 1)
+        for column, card in enumerate(self.metric_cards):
+            self.metrics_layout.addWidget(card, 0, column)
         root.addLayout(self.metrics_layout)
 
         self.table_panel = QFrame()
@@ -553,15 +513,15 @@ class LicenseAdminWindow(QMainWindow):
         table_panel_layout.setSpacing(0)
         self.table_header = QWidget()
         self.table_header.setObjectName("tableHeader")
-        table_header_layout = QHBoxLayout(self.table_header)
+        table_header_layout = QGridLayout(self.table_header)
+        self.table_header_layout = table_header_layout
         table_header_layout.setContentsMargins(10, 8, 12, 8)
         table_header_layout.setSpacing(8)
 
         self.table_filters = QWidget()
         self.table_filters.setObjectName("tableFilters")
-        self.table_filters.setMaximumWidth(720)
         self.table_filters.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
         filters = QHBoxLayout(self.table_filters)
@@ -579,8 +539,7 @@ class LicenseAdminWindow(QMainWindow):
         )
         self._search_clear_action.setVisible(False)
         self._search_clear_action.triggered.connect(self.search_edit.clear)
-        self.search_edit.setMinimumWidth(180)
-        self.search_edit.setMaximumWidth(520)
+        self.search_edit.setMinimumWidth(100)
         self.search_edit.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
@@ -592,12 +551,11 @@ class LicenseAdminWindow(QMainWindow):
         self._populate_status_selector()
         filters.addWidget(self.search_edit, 1)
         filters.addWidget(self.status_combo)
-        table_header_layout.addWidget(self.table_filters)
-        table_header_layout.addStretch(1)
+        table_header_layout.addWidget(self.table_filters, 0, 0)
 
         self.visible_label = QLabel()
         self.visible_label.setObjectName("muted")
-        table_header_layout.addWidget(self.visible_label)
+        table_header_layout.addWidget(self.visible_label, 0, 1)
         self._sync_badge_state = "unsynced"
         self.sync_badge = QLabel(text("sync.unsynced"))
         self.sync_badge.setObjectName("syncBadge")
@@ -608,10 +566,7 @@ class LicenseAdminWindow(QMainWindow):
             QSizePolicy.Policy.Fixed,
             QSizePolicy.Policy.Fixed,
         )
-        table_header_layout.addWidget(
-            self.sync_badge,
-            alignment=Qt.AlignmentFlag.AlignVCenter,
-        )
+        table_header_layout.addWidget(self.sync_badge, 0, 2)
         table_panel_layout.addWidget(self.table_header)
 
         self.table_model = LicenseTableModel(self._theme_mode)
@@ -655,7 +610,9 @@ class LicenseAdminWindow(QMainWindow):
         self.table_stack.addWidget(self.table_state_panel)
         table_panel_layout.addWidget(self.table_stack, 1)
         root.addWidget(self.table_panel, 1)
-        main_layout.addWidget(self.content_surface, 1)
+        self.table_panel.setMinimumHeight(210)
+        self.content_scroll = scroll_container(self.content_surface, name="dashboardScroll")
+        main_layout.addWidget(self.content_scroll, 1)
         shell.addWidget(self.main_surface, 1)
 
         self.search_edit.textChanged.connect(self.proxy_model.set_query)
@@ -671,26 +628,11 @@ class LicenseAdminWindow(QMainWindow):
         self.project_combo.selection_changed.connect(self._project_combo_changed)
         self._set_sidebar_collapsed(False)
         self.setCentralWidget(central)
+        self._responsive = DashboardResponsiveController(self)
+        self._responsive.update_layout()
         self.toast = Toast(self)
         self.statusBar().hide()
         self._selection_changed()
-
-    def _header_info_button(
-        self,
-        icon_name: str,
-        label_key: str,
-        callback: Callable[[], None],
-    ) -> QToolButton:
-        button = QToolButton(self.header_info_group)
-        button.setObjectName("headerInfoButton")
-        button.setFixedSize(CONTROL_HEIGHT - 2, CONTROL_HEIGHT - 2)
-        button.setIcon(svg_icon(icon_name, 16))
-        button.setIconSize(QSize(16, 16))
-        button.setToolTip(text(label_key))
-        button.setAccessibleName(text(label_key))
-        button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.clicked.connect(callback)
-        return button
 
     def _create_menus(self) -> None:
         self.menuBar().hide()
@@ -753,6 +695,7 @@ class LicenseAdminWindow(QMainWindow):
 
     def _theme_selected(self, mode: str) -> None:
         self._theme_mode = apply_theme(mode)
+        self.setProperty("themeMode", self._theme_mode)
         self._qsettings.setValue("ui/theme", self._theme_mode)
         self.theme_toggle.set_mode(self._theme_mode)
         self.table_model.set_theme_mode(self._theme_mode)
@@ -794,13 +737,8 @@ class LicenseAdminWindow(QMainWindow):
         self.window_controls.retranslate()
         self.theme_toggle.retranslate()
         self.project_combo.retranslate()
-        for button, label_key in (
-            (self.about_button, "info.about"),
-            (self.policy_button, "info.policy"),
-            (self.terms_button, "info.terms"),
-        ):
-            button.setToolTip(text(label_key))
-            button.setAccessibleName(text(label_key))
+        self.info_button.retranslate()
+        self.operation_bar.retranslate()
         self.overview_button.set_label(text("nav.overview"))
         self.new_sidebar_button.set_label(text("action.new_license"))
         self.license_sidebar_menu.set_label(text("nav.license"))
@@ -818,7 +756,9 @@ class LicenseAdminWindow(QMainWindow):
             name=text("accessibility.application_status"),
             description=self.busy_status.text(),
         )
-        self.primary_action_button.setText(text("action.new_license"))
+        self.primary_action_button.setAccessibleName(text("action.new_license"))
+        self.primary_action_button.setToolTip(text("action.new_license"))
+        self._responsive.update_layout(force=True)
         self.total_card.set_texts(text("metric.total"), text("metric.total_note"))
         self.active_card.set_texts(text("status.active"), text("metric.active_note"))
         self.expiring_card.set_texts(
@@ -859,19 +799,22 @@ class LicenseAdminWindow(QMainWindow):
         self.setWindowTitle(f"{self._settings.project_name} — License Admin")
 
     def _toggle_sidebar(self) -> None:
-        self._set_sidebar_collapsed(not self._sidebar_collapsed)
+        self._sidebar_preferred_collapsed = not self._sidebar_collapsed
+        self._responsive.update_layout(force=True)
 
     def _set_sidebar_collapsed(self, collapsed: bool) -> None:
         self._sidebar_collapsed = collapsed
         self.sidebar.setFixedWidth(72 if collapsed else 220)
         self.header_brand.setVisible(not collapsed)
         self.sidebar_header_layout.setContentsMargins(
-            6 if collapsed else 12,
+            8 if collapsed else 12,
             0,
-            4 if collapsed else 8,
+            8,
             0,
         )
-        self.sidebar_header_layout.setSpacing(2 if collapsed else 5)
+        self.sidebar_header_layout.setSpacing(0 if collapsed else 5)
+        # Balance the leading spacer while the brand is hidden.
+        self.sidebar_header_layout.setStretch(3, 1 if collapsed else 0)
         self.sidebar_content_layout.setContentsMargins(
             8 if collapsed else 10,
             4,
@@ -1286,6 +1229,7 @@ class LicenseAdminWindow(QMainWindow):
         result = load_project_records(self._settings)
         self._table_operation_error = None
         self._last_operation_retry = None
+        self.operation_bar.dismiss()
         self._records = list(result.records)
         self._revocations = result.revocations
         self._advance_local_revision()
@@ -1621,12 +1565,15 @@ class LicenseAdminWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
     def _retry_last_operation(self) -> None:
+        if self._busy:
+            return
         retry = self._last_operation_retry
         self._dismiss_operation_error()
         if retry is not None:
             retry()
 
     def _dismiss_operation_error(self) -> None:
+        self.operation_bar.dismiss()
         self._table_operation_error = None
         self._last_operation_retry = None
         self._refresh_table_state()
@@ -1656,12 +1603,10 @@ class LicenseAdminWindow(QMainWindow):
         state = "offline" if self._is_offline_error(error) else "sync_error"
         self._table_operation_error = (state, error)
         self._last_operation_retry = retry
+        self.operation_bar.show_error(error)
+        if not self._busy:
+            self.operation_bar.finish()
         self._refresh_table_state()
-        announce(
-            self.table_state_panel,
-            self.table_state_panel.title_label.text(),
-            assertive=True,
-        )
 
     def _filter_status_changed(self, _value: object | None = None) -> None:
         status = self.status_combo.current_data()
@@ -2502,6 +2447,8 @@ class LicenseAdminWindow(QMainWindow):
             operation,
             complete,
             retry=self._pull_sheet,
+            step=text("operation.preview"),
+            cancellable=True,
         )
 
     def _apply_pull_preview(
@@ -2514,6 +2461,9 @@ class LicenseAdminWindow(QMainWindow):
         public_url: str,
         verification: tuple[tuple[bytes, ...], str, str],
     ) -> None:
+        preview = reviewed if reviewed is not None else reviewed_public
+        if preview is None:
+            raise RuntimeError("No reviewed feed to apply.")
         if not self._sync_context_is_current(context):
             self._set_sync_badge("dirty")
             return
@@ -2618,6 +2568,7 @@ class LicenseAdminWindow(QMainWindow):
             operation,
             complete,
             retry=self._pull_sheet,
+            step=text("operation.apply_pull", count=len(preview.records)),
         )
 
     def _push_sheet(self) -> None:
@@ -2705,6 +2656,8 @@ class LicenseAdminWindow(QMainWindow):
             operation,
             complete,
             retry=self._push_sheet,
+            step=text("operation.preview"),
+            cancellable=True,
         )
 
     def _publish_push_preview(
@@ -2789,6 +2742,7 @@ class LicenseAdminWindow(QMainWindow):
             operation,
             complete,
             retry=self._push_sheet,
+            step=text("operation.publish", count=len(records)),
         )
 
     def _format_sheet(self) -> None:
@@ -2821,6 +2775,8 @@ class LicenseAdminWindow(QMainWindow):
             client.read_records,
             complete,
             retry=self._test_connection,
+            step=text("operation.preview"),
+            cancellable=True,
         )
 
     def _open_sheet(self) -> None:
@@ -2866,14 +2822,21 @@ class LicenseAdminWindow(QMainWindow):
         on_success: Callable[[Any], None],
         *,
         retry: Callable[[], None],
+        step: str = "",
+        cancellable: bool = False,
     ) -> None:
         if self._busy:
             return
-        self._set_busy(True, message)
+        self._dismiss_operation_error()
+        self._operation_cancelled = False
+        self._set_busy(True, message, step=step, cancellable=cancellable)
         worker = OperationThread(operation)
         self._workers.add(worker)
+        self._cancellable_worker = worker if cancellable else None
 
         def succeeded(result: Any) -> None:
+            if self._operation_cancelled:
+                return
             try:
                 on_success(result)
             except Exception as exc:
@@ -2885,15 +2848,21 @@ class LicenseAdminWindow(QMainWindow):
                 self._refresh_table_state()
 
         def failed(error: str) -> None:
+            if self._operation_cancelled:
+                return
             QMessageBox.critical(self, text("message.operation_failed"), error)
             self._show_operation_error(error, retry)
 
         def finished() -> None:
             self._workers.discard(worker)
+            self._cancellable_worker = None
             worker.deleteLater()
             continuation = self._operation_continuation
             self._operation_continuation = None
-            self._set_busy(False, text("message.ready"))
+            status = text("operation.cancelled") if self._operation_cancelled else text("message.ready")
+            self._set_busy(False, status)
+            if self._operation_cancelled:
+                continuation = None
             if continuation is not None:
                 continuation()
 
@@ -2901,6 +2870,14 @@ class LicenseAdminWindow(QMainWindow):
         worker.failed.connect(failed)
         worker.finished.connect(finished)
         worker.start()
+
+    def _cancel_operation(self) -> None:
+        worker = self._cancellable_worker
+        if worker is None or not self._busy:
+            return
+        self._operation_cancelled = True
+        worker.requestInterruption()
+        self.operation_bar.cancelling()
 
     def _queue_after_operation(self, continuation: Callable[[], None]) -> None:
         if not self._busy:
@@ -2910,12 +2887,21 @@ class LicenseAdminWindow(QMainWindow):
             raise RuntimeError("A follow-up operation is already queued.")
         self._operation_continuation = continuation
 
-    def _set_busy(self, busy: bool, message: str) -> None:
+    def _set_busy(
+        self,
+        busy: bool,
+        message: str,
+        *,
+        step: str = "",
+        cancellable: bool = False,
+    ) -> None:
         self._busy = busy
-        self.busy_status.setText(message)
-        self.busy_status.setAccessibleDescription(message)
-        self.busy_status.setVisible(busy)
-        announce(self.busy_status if busy else self, message)
+        if busy:
+            self.operation_bar.start(message, step=step, cancellable=cancellable)
+        else:
+            self.operation_bar.finish()
+            if self._table_operation_error is None:
+                announce(self, message)
         self._update_action_states()
         self.table.setEnabled(not busy)
         if busy:
@@ -3018,6 +3004,8 @@ class LicenseAdminWindow(QMainWindow):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
+        if hasattr(self, "_responsive"):
+            self._responsive.update_layout()
         if hasattr(self, "toast"):
             self.toast.reposition()
 

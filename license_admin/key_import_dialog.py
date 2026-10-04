@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QSize
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -30,6 +31,7 @@ from license_admin.key_store import (
 )
 from license_admin.icons import svg_icon
 from license_admin.localization import text
+from license_admin.responsive import fit_window_to_screen, responsive_form, scroll_container, wrap_label
 
 
 class KeyImportDialog(QDialog):
@@ -56,9 +58,11 @@ class KeyImportDialog(QDialog):
         self._current_public_key_path = current_public_key_path
         self._imported_pair: ImportedKeyPair | None = None
         self.setWindowTitle(text("key.title", project=project_name))
-        self.setMinimumWidth(680)
 
-        layout = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        root.addWidget(scroll_container(body), 1)
         intro = QLabel(
             text("key.intro")
         )
@@ -84,6 +88,7 @@ class KeyImportDialog(QDialog):
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_edit.setPlaceholderText(text("key.password_placeholder"))
         form.addRow(text("key.password"), self.password_edit)
+        responsive_form(form)
         layout.addLayout(form)
 
         destination = QLabel(
@@ -95,7 +100,7 @@ class KeyImportDialog(QDialog):
                 ),
             )
         )
-        destination.setWordWrap(True)
+        wrap_label(destination)
         destination.setObjectName("muted")
         layout.addWidget(destination)
 
@@ -121,7 +126,8 @@ class KeyImportDialog(QDialog):
         )
         buttons.accepted.connect(self._validate_and_import)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        root.addWidget(buttons)
+        fit_window_to_screen(self, QSize(680, 480))
 
     def _path_field(
         self,

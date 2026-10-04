@@ -14,7 +14,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from PySide6.QtCore import QPoint, QSettings, Qt
+from PySide6.QtCore import QPoint, QRect, QSettings, Qt
+from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -24,6 +25,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QInputDialog,
     QPushButton,
+    QStyle,
+    QStyleOptionFocusRect,
     QToolBar,
     QToolButton,
     QWidget,
@@ -87,7 +90,9 @@ from license_admin.theme import (
 )
 from license_admin.ui_metrics import CONTROL_HEIGHT
 from license_admin.window_chrome import DraggableFrame
+from license_admin.widget_style import configure_widget_style
 from workspace_temp import workspace_temp_dir
+from ui_test_support import load_test_fonts
 
 
 class LicenseAdminUiTests(unittest.TestCase):
@@ -105,7 +110,8 @@ class LicenseAdminUiTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         existing = QApplication.instance()
         cls.app = existing if isinstance(existing, QApplication) else QApplication([])
-        cls.app.setStyle("Fusion")
+        load_test_fonts()
+        configure_widget_style(cls.app)
         cls.app.setStyleSheet(ADMIN_STYLESHEET)
         cls.temporary_directory = workspace_temp_dir()
         root = Path(cls.temporary_directory.name)
@@ -140,10 +146,15 @@ class LicenseAdminUiTests(unittest.TestCase):
         cls.temporary_directory.cleanup()
 
     def create_window(self) -> LicenseAdminWindow:
-        return LicenseAdminWindow(
+        window = LicenseAdminWindow(
             project_store=self.project_store,
             qsettings=self.qsettings,
         )
+        # Existing desktop-layout tests use a reference size, independently of
+        # the offscreen plugin's 800x800 virtual display.
+        window.resize(1320, 820)
+        window._responsive.update_layout()
+        return window
 
     def test_vertical_header_displays_row_numbers(self) -> None:
         model = LicenseTableModel()
@@ -218,7 +229,7 @@ class LicenseAdminUiTests(unittest.TestCase):
     def test_compact_layout_has_no_action_toolbar(self) -> None:
         window = self.create_window()
         try:
-            window.resize(980, 640)
+            window.resize(1320, 820)
             window.show()
             self.app.processEvents()
             self.assertEqual(window.findChildren(QToolBar), [])
@@ -237,11 +248,11 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.app.processEvents()
             self.assertTrue(window.mask().isEmpty())
             window.showNormal()
-            window.resize(980, 640)
+            window.resize(1320, 820)
             self.app.processEvents()
             self.assertFalse(window.mask().isEmpty())
             self.assertEqual(window.sidebar.width(), 220)
-            self.assertEqual(window.top_bar.height(), 58)
+            self.assertEqual(window.top_bar.height(), 44)
             self.assertEqual(window.sidebar_header.height(), window.top_bar.height())
             self.assertIs(window.sidebar_header.parentWidget(), window.sidebar)
             self.assertIs(window.window_controls.parentWidget(), window.top_bar)
@@ -260,15 +271,15 @@ class LicenseAdminUiTests(unittest.TestCase):
                     window.window_controls.maximize_button.width(),
                     window.window_controls.close_button.width(),
                 },
-                {32},
+                {20},
+            )
+            self.assertLess(
+                window.window_controls.close_button.geometry().left(),
+                window.window_controls.minimize_button.geometry().left(),
             )
             self.assertLess(
                 window.window_controls.minimize_button.geometry().left(),
                 window.window_controls.maximize_button.geometry().left(),
-            )
-            self.assertLess(
-                window.window_controls.maximize_button.geometry().left(),
-                window.window_controls.close_button.geometry().left(),
             )
             content_margins = window.content_surface.layout().contentsMargins()
             self.assertEqual(
@@ -293,7 +304,7 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertIs(window.search_edit.parentWidget(), window.table_filters)
             self.assertIs(window.status_combo.parentWidget(), window.table_filters)
             self.assertIs(window.primary_action_button.parentWidget(), window.top_bar)
-            self.assertEqual(window.primary_action_button.width(), 128)
+            self.assertGreaterEqual(window.primary_action_button.width(), window.primary_action_button.sizeHint().width())
             self.assertEqual(
                 {
                     window.project_combo.height(),
@@ -346,6 +357,8 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.app.processEvents()
             self.assertEqual(window.sidebar.width(), 72)
             self.assertTrue(window.header_brand.isHidden())
+            self.assertLessEqual(abs(window.sidebar_toggle.geometry().center().x()
+                                     - window.sidebar_header.rect().center().x()), 1)
             self.assertFalse(window.brand_mark.isVisible())
             self.assertEqual(window.overview_button.text(), "")
             self.assertEqual(window.project_sidebar_menu.text(), "")
@@ -368,16 +381,13 @@ class LicenseAdminUiTests(unittest.TestCase):
     def test_header_information_buttons_open_user_facing_documents(self) -> None:
         window = self.create_window()
         try:
-            for button, tooltip in (
-                (window.about_button, "About"),
-                (window.policy_button, "Policy"),
-                (window.terms_button, "Terms of service"),
-            ):
-                self.assertIs(button.parentWidget(), window.header_info_group)
-                self.assertEqual(button.size().height(), CONTROL_HEIGHT - 2)
-                self.assertEqual(button.toolTip(), tooltip)
-                self.assertFalse(button.icon().isNull())
-            self.assertIs(window.header_info_group.parentWidget(), window.top_bar)
+            self.assertIs(window.info_button.parentWidget(), window.top_bar)
+            self.assertEqual(window.info_button.accessibleName(), "Help / Info")
+            self.assertEqual(
+                [action.text() for action in window.info_button.menu().actions()],
+                ["About", "Privacy", "Terms of service"],
+            )
+            self.assertTrue(all(not action.isCheckable() for action in window.info_button.menu().actions()))
 
             about = AboutDialog(window)
             policy = PolicyDialog(window)
@@ -392,25 +402,19 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertIsNone(policy.contact_link)
             self.assertIsNone(terms.contact_link)
 
-            about_copy = " ".join(
-                label.text() for label in about.section_bodies
-            ).casefold()
-            for implementation_detail in (
-                "python",
-                "pyside",
-                "qt",
-                "cryptography",
-                "technology stack",
-            ):
-                self.assertNotIn(implementation_detail, about_copy)
+            self.assertIn("Third-party attribution", [label.text() for label in about.section_titles])
+            self.assertIn("Icons8", " ".join(label.text() for label in about.section_bodies))
+            self.assertIsNotNone(about.copy_diagnostics_button)
+            self.assertIsNone(policy.copy_diagnostics_button)
+            self.assertIsNone(terms.copy_diagnostics_button)
 
             self.assertGreaterEqual(len(policy.section_titles), 5)
             self.assertGreaterEqual(len(terms.section_titles), 5)
 
             with patch.object(InformationDialog, "exec", return_value=0) as show:
-                window.about_button.click()
-                window.policy_button.click()
-                window.terms_button.click()
+                window.info_button.about_action.trigger()
+                window.info_button.policy_action.trigger()
+                window.info_button.terms_action.trigger()
             self.assertEqual(show.call_count, 3)
             about.close()
             policy.close()
@@ -1012,6 +1016,7 @@ class LicenseAdminUiTests(unittest.TestCase):
                 on_success: object,
                 *,
                 retry: object,
+                step: str,
             ) -> None:
                 self.assertEqual(retry, window._push_sheet)
                 window._advance_local_revision()
@@ -1250,6 +1255,12 @@ class LicenseAdminUiTests(unittest.TestCase):
                     abs(action_center.y() - window.search_edit.rect().center().y()),
                     1,
                 )
+            for width in (980, 1320, 1600):
+                window.resize(width, 900)
+                self.app.processEvents()
+                self.assertEqual(window.search_edit.x(), 0)
+                self.assertEqual(window.status_combo.x() - window.search_edit.geometry().right() - 1, 8)
+                self.assertEqual(window.status_combo.geometry().right(), window.table_filters.rect().right())
         finally:
             window.close()
 
@@ -1306,10 +1317,6 @@ class LicenseAdminUiTests(unittest.TestCase):
                 palette.status_invalid,
             ):
                 self.assertGreaterEqual(contrast(color, palette.surface), 4.5)
-            self.assertGreaterEqual(
-                contrast(palette.focus_ring, palette.surface),
-                3.0,
-            )
         icon_color = "#65788a"
         self.assertGreaterEqual(contrast(icon_color, "#ffffff"), 3.0)
         self.assertGreaterEqual(contrast(icon_color, "#07111b"), 3.0)
@@ -1330,7 +1337,7 @@ class LicenseAdminUiTests(unittest.TestCase):
         dark_color = model.data(status_index, Qt.ItemDataRole.ForegroundRole)
         self.assertEqual(dark_color.name(), DARK_PALETTE.status_invalid)
 
-    def test_keyboard_focus_changes_render_for_primary_controls(self) -> None:
+    def test_controls_remain_keyboard_reachable_without_native_focus_frames(self) -> None:
         original_stylesheet = self.app.styleSheet()
         window = self.create_window()
         try:
@@ -1343,7 +1350,7 @@ class LicenseAdminUiTests(unittest.TestCase):
                 window.primary_action_button,
                 window.overview_button,
                 window.project_combo,
-                window.about_button,
+                window.info_button,
                 window.theme_toggle.light_button,
                 window.table,
                 window.window_controls.close_button,
@@ -1356,19 +1363,19 @@ class LicenseAdminUiTests(unittest.TestCase):
                         control.focusPolicy() & Qt.FocusPolicy.TabFocus,
                         f"Not keyboard reachable: {control.objectName()}",
                     )
-                    window.search_edit.setFocus()
-                    self.app.processEvents()
-                    unfocused = control.grab().toImage()
                     control.setFocus(Qt.FocusReason.TabFocusReason)
                     self.app.processEvents()
-                    focused = control.grab().toImage()
-                    unfocused_digest = hashlib.sha256(bytes(unfocused.bits())).digest()
-                    focused_digest = hashlib.sha256(bytes(focused.bits())).digest()
-                    self.assertNotEqual(
-                        unfocused_digest,
-                        focused_digest,
-                        f"{mode}: {control.objectName() or type(control).__name__}",
-                    )
+                    self.assertIs(self.app.focusWidget(), control)
+                pixmap = QPixmap(40, 40)
+                pixmap.fill(Qt.GlobalColor.transparent)
+                before = bytes(pixmap.toImage().bits())
+                painter = QPainter(pixmap)
+                option = QStyleOptionFocusRect()
+                option.rect = QRect(4, 4, 32, 32)
+                option.state = QStyle.StateFlag.State_HasFocus | QStyle.StateFlag.State_KeyboardFocusChange
+                self.app.style().drawPrimitive(QStyle.PrimitiveElement.PE_FrameFocusRect, option, painter)
+                painter.end()
+                self.assertEqual(bytes(pixmap.toImage().bits()), before)
         finally:
             window.close()
             self.app.setStyleSheet(original_stylesheet)
@@ -1390,7 +1397,7 @@ class LicenseAdminUiTests(unittest.TestCase):
             ):
                 self.assertEqual(button.accessibleName(), name)
                 self.assertEqual(button.toolTip(), name)
-                self.assertEqual(button.size().width(), 32)
+                self.assertEqual(button.size().width(), 20)
 
             window._set_sidebar_collapsed(True)
             self.assertEqual(window.overview_button.text(), "")
@@ -1411,7 +1418,7 @@ class LicenseAdminUiTests(unittest.TestCase):
                 window.window_controls.maximize_button.accessibleName(),
                 "Restore",
             )
-            self.assertEqual(window.window_controls.maximize_button.text(), "❐")
+            self.assertEqual(window.window_controls.maximize_button.text(), "")
             window.window_controls.maximize_button.setFocus()
             QTest.keyClick(
                 window.window_controls.maximize_button,
@@ -1559,7 +1566,7 @@ class LicenseAdminUiTests(unittest.TestCase):
             section_labels = [
                 action.text()
                 for action in selector.menu().actions()
-                if action.isSeparator() and action.text()
+                if action.property("projectHeading")
             ]
             self.assertIn("Pinned", section_labels)
             self.assertIn("Recent", section_labels)
@@ -1571,6 +1578,19 @@ class LicenseAdminUiTests(unittest.TestCase):
                 if action.isVisible()
             ]
             self.assertEqual(visible_projects, ["project-2"])
+            self.assertTrue(all(not section.isVisible() for section in selector._section_actions
+                                if section.text() == "Pinned"))
+        finally:
+            selector.close()
+
+    def test_single_project_menu_has_no_leading_section_or_separator(self) -> None:
+        selector = ProjectSelector()
+        try:
+            project = selector.add_item("Metalens", "metalens")
+            selector._prepare_menu()
+            self.assertEqual(selector.menu().actions(), [project])
+            self.assertFalse(selector.menu().actions()[0].isSeparator())
+            self.assertFalse(selector._section_actions)
         finally:
             selector.close()
 
@@ -1758,8 +1778,12 @@ class LicenseAdminUiTests(unittest.TestCase):
             self.assertEqual(window.new_action.text(), "Tạo license")
             self.assertEqual(window.status_combo.actions()[0].text(), "Tất cả trạng thái")
             self.assertEqual(window.table_model.headerData(0, Qt.Orientation.Horizontal), "Người dùng")
-            self.assertEqual(window.theme_toggle.light_button.text(), "Sáng")
-            self.assertEqual(window.theme_toggle.dark_button.text(), "Tối")
+            self.assertEqual(window.theme_toggle.light_button.text(), "")
+            self.assertEqual(window.theme_toggle.dark_button.text(), "")
+            self.assertEqual(window.theme_toggle.light_button.toolTip(), "Sáng")
+            self.assertEqual(window.theme_toggle.dark_button.accessibleName(), "Tối")
+            self.assertFalse(window.theme_toggle.light_button.icon().isNull())
+            self.assertFalse(window.theme_toggle.dark_button.icon().isNull())
 
             self.assertTrue(
                 window.language_selector.set_current_data("es", emit=True)

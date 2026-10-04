@@ -172,8 +172,18 @@ class ProjectSelector(PopoverSelect):
             menu.addSeparator()
             QTimer.singleShot(0, self._search_edit.setFocus)
         for label, actions in categories:
-            section = menu.addSection(label)
-            self._section_actions.append(section)
+            if len(categories) > 1:
+                heading = QLabel(label)
+                heading.setObjectName("projectMenuHeading")
+                heading.setContentsMargins(10, 4, 10, 2)
+                heading.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                section = QWidgetAction(menu)
+                section.setText(label)
+                section.setProperty("projectHeading", True)
+                section.setEnabled(False)
+                section.setDefaultWidget(heading)
+                menu.addAction(section)
+                self._section_actions.append(section)
             for action in actions:
                 menu.addAction(action)
                 action.setProperty("projectSection", label)

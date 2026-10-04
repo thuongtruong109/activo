@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtGui import QResizeEvent
+from PySide6.QtWidgets import QBoxLayout, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 
 class DataStateBanner(QFrame):
@@ -16,12 +17,14 @@ class DataStateBanner(QFrame):
         self.setProperty("state", "empty")
 
         layout = QHBoxLayout(self)
+        self._layout = layout
         layout.setContentsMargins(14, 10, 10, 10)
         layout.setSpacing(12)
         copy = QVBoxLayout()
         copy.setSpacing(2)
         self.title_label = QLabel()
         self.title_label.setObjectName("dataStateTitle")
+        self.title_label.setWordWrap(True)
         self.body_label = QLabel()
         self.body_label.setObjectName("dataStateBody")
         self.body_label.setWordWrap(True)
@@ -37,6 +40,13 @@ class DataStateBanner(QFrame):
         self.open_folder_button.setObjectName("dataStateAction")
         self.open_folder_button.clicked.connect(self.open_folder_requested)
         layout.addWidget(self.open_folder_button)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._layout.setDirection(
+            QBoxLayout.Direction.TopToBottom if self.width() < 580
+            else QBoxLayout.Direction.LeftToRight
+        )
 
     def set_content(
         self,

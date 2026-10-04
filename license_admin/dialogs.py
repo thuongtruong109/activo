@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, time, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, QSize, Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDateEdit,
@@ -32,6 +32,7 @@ from license_admin.icons import svg_icon
 from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.key_store import KeyPasswordRequiredError, inspect_key_pair
 from license_admin.localization import text
+from license_admin.responsive import fit_window_to_screen, responsive_form, scroll_container
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.service_account_store import inspect_service_account
 from license_admin.settings import AdminSettings, ProjectStore
@@ -172,7 +173,6 @@ class SettingsDialog(QDialog):
         self._transaction = SettingsTransaction(project_directory)
         self._validated_key_paths: tuple[Path, Path] | None = None
         self.setWindowTitle(text("settings.title"))
-        self.setMinimumSize(720, 500)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(1, 1, 1, 1)
         layout.setSpacing(0)
@@ -229,7 +229,8 @@ class SettingsDialog(QDialog):
         key_warning.setWordWrap(True)
         key_warning.setObjectName("warning")
         files_form.addRow("", key_warning)
-        self.settings_pages.addWidget(files_tab)
+        responsive_form(files_form)
+        self.settings_pages.addWidget(scroll_container(files_tab))
         self.settings_tab_header.add_tab(text("settings.tab_files"))
 
         google_tab = QWidget()
@@ -261,7 +262,8 @@ class SettingsDialog(QDialog):
         note.setWordWrap(True)
         note.setObjectName("muted")
         google_form.addRow("", note)
-        self.settings_pages.addWidget(google_tab)
+        responsive_form(google_form)
+        self.settings_pages.addWidget(scroll_container(google_tab))
         self.settings_tab_header.add_tab(text("settings.tab_sheets"))
 
         claims_tab = QWidget()
@@ -276,7 +278,8 @@ class SettingsDialog(QDialog):
         claims_note.setWordWrap(True)
         claims_note.setObjectName("warning")
         claims_form.addRow("", claims_note)
-        self.settings_pages.addWidget(claims_tab)
+        responsive_form(claims_form)
+        self.settings_pages.addWidget(scroll_container(claims_tab))
         self.settings_tab_header.add_tab(text("settings.tab_claims"))
 
         buttons = QDialogButtonBox(
@@ -295,6 +298,7 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         body_layout.addWidget(buttons)
+        fit_window_to_screen(self, QSize(720, 500))
         self._frameless_resize = FramelessResizeController(self, corner_radius=11)
 
     def _path_field(

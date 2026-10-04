@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QSize
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 from issue_license import LicenseIssueError
 from license_admin.icons import svg_icon
 from license_admin.localization import text
+from license_admin.responsive import fit_window_to_screen, responsive_form, scroll_container, wrap_label
 from license_admin.service_account_store import (
     ImportedServiceAccount,
     SERVICE_ACCOUNT_FILENAME,
@@ -47,9 +49,11 @@ class ServiceAccountImportDialog(QDialog):
         self._display_directory = display_directory or project_directory
         self._imported: ImportedServiceAccount | None = None
         self.setWindowTitle(text("credential.title", project=project_name))
-        self.setMinimumWidth(680)
 
-        layout = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        root.addWidget(scroll_container(body), 1)
         intro = QLabel(
             text("credential.intro")
         )
@@ -74,6 +78,7 @@ class ServiceAccountImportDialog(QDialog):
         row.addWidget(self.source_edit, 1)
         row.addWidget(self.browse_button)
         form.addRow(text("credential.source"), container)
+        responsive_form(form)
         layout.addLayout(form)
 
         destination = QLabel(
@@ -82,7 +87,7 @@ class ServiceAccountImportDialog(QDialog):
                 path=self._display_directory / SERVICE_ACCOUNT_FILENAME,
             )
         )
-        destination.setWordWrap(True)
+        wrap_label(destination)
         destination.setObjectName("muted")
         layout.addWidget(destination)
 
@@ -108,7 +113,8 @@ class ServiceAccountImportDialog(QDialog):
         )
         buttons.accepted.connect(self._validate_and_import)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        root.addWidget(buttons)
+        fit_window_to_screen(self, QSize(680, 480))
 
     def _browse(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(

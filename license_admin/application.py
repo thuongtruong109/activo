@@ -11,6 +11,7 @@ from issue_license import LicenseIssueError
 from license_admin.app_identity import configure_application_identity, configure_process_identity
 from license_admin.main_window import LicenseAdminWindow
 from license_admin.theme import ADMIN_STYLESHEET
+from license_admin.widget_style import configure_widget_style
 
 
 def run_application() -> int:
@@ -20,7 +21,7 @@ def run_application() -> int:
     existing = QApplication.instance()
     app = existing if isinstance(existing, QApplication) else QApplication(sys.argv)
     configure_application_identity(app)
-    app.setStyle("Fusion")
+    configure_widget_style(app)
     app.setStyleSheet(ADMIN_STYLESHEET)
     try:
         window = LicenseAdminWindow()

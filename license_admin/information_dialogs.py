@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QSize, Qt, QUrl
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -25,171 +24,22 @@ from license_admin.app_identity import (
     APP_VERSION,
     SUPPORT_EMAIL,
 )
+from license_admin.accessibility import announce
+from license_admin.diagnostics import (
+    build_channel,
+    diagnostics_text,
+    third_party_notices_path,
+)
+from license_admin.information_content import document_content
+from license_admin.responsive import fit_window_to_screen, wrap_label
+from license_admin.version import APP_COMPANY_NAME
 from license_admin.icons import svg_icon
-from license_admin.localization import current_language, text
-from license_admin.window_chrome import DraggableFrame, enable_frameless_window
-
-
-@dataclass(frozen=True, slots=True)
-class InformationContent:
-    title: str
-    summary: str
-    sections: tuple[tuple[str, str], ...]
-
-
-_CONTENT: dict[str, dict[str, InformationContent]] = {
-    "about": {
-        "en": InformationContent(
-            "About License Admin",
-            "A focused desktop application for issuing and managing signed product licenses across isolated projects.",
-            (
-                (
-                    "Purpose",
-                    "License Admin helps authorized operators create, renew, revoke, verify, import, export, and synchronize license records without mixing data between projects.",
-                ),
-                (
-                    "Designed for control",
-                    "Each project keeps its own signing keys, credentials, settings, and license data. Sensitive actions remain explicit and visible to the operator.",
-                ),
-                (
-                    "Version",
-                    f"{APP_DISPLAY_NAME} {APP_VERSION}",
-                ),
-            ),
-        ),
-        "vi": InformationContent(
-            "Giới thiệu License Admin",
-            "Ứng dụng desktop chuyên dụng để phát hành và quản lý license đã ký cho nhiều project độc lập.",
-            (
-                (
-                    "Mục đích",
-                    "License Admin hỗ trợ người vận hành được ủy quyền tạo, gia hạn, thu hồi, xác minh, nhập, xuất và đồng bộ bản ghi license mà không trộn dữ liệu giữa các project.",
-                ),
-                (
-                    "Được thiết kế để kiểm soát",
-                    "Mỗi project giữ riêng key ký, credential, cấu hình và dữ liệu license. Các thao tác nhạy cảm đều cần hành động rõ ràng từ người vận hành.",
-                ),
-                (
-                    "Phiên bản",
-                    f"{APP_DISPLAY_NAME} {APP_VERSION}",
-                ),
-            ),
-        ),
-    },
-    "policy": {
-        "en": InformationContent(
-            "Privacy & transparency policy",
-            "Effective 3 October 2026. This policy explains what the application stores, when it connects to external services, and what remains under your control.",
-            (
-                (
-                    "Local-first data",
-                    "Project profiles, private keys, Google credentials, and local license records are stored on the device or storage location selected by the operator. License Admin does not include advertising or behavioral analytics.",
-                ),
-                (
-                    "External connections",
-                    "The application contacts Google services only for an operator-requested Sheet action. It may retrieve language flag icons from FlagCDN. Data sent to Google is governed by the configured account and Google's policies.",
-                ),
-                (
-                    "Sensitive credentials",
-                    "Private signing keys and service-account credentials are used locally for authorized signing or authentication. The application does not intentionally publish them or include them in exported project settings.",
-                ),
-                (
-                    "Operator control",
-                    "You decide which projects, files, credentials, and Sheets are configured. You can remove local project data and revoke external credentials at any time.",
-                ),
-                (
-                    "Transparency commitment",
-                    "We aim to make network actions explicit, avoid hidden data collection, report errors clearly, and update this notice when application behavior materially changes.",
-                ),
-            ),
-        ),
-        "vi": InformationContent(
-            "Chính sách riêng tư & minh bạch",
-            "Có hiệu lực từ 03/10/2026. Chính sách này giải thích dữ liệu ứng dụng lưu, thời điểm kết nối dịch vụ ngoài và quyền kiểm soát của bạn.",
-            (
-                (
-                    "Dữ liệu ưu tiên lưu cục bộ",
-                    "Profile project, private key, Google credential và bản ghi license cục bộ được lưu trên thiết bị hoặc vị trí do người vận hành chọn. License Admin không tích hợp quảng cáo hay phân tích hành vi.",
-                ),
-                (
-                    "Kết nối bên ngoài",
-                    "Ứng dụng chỉ kết nối dịch vụ Google khi người vận hành yêu cầu thao tác với Sheet. Ứng dụng có thể tải icon cờ ngôn ngữ từ FlagCDN. Dữ liệu gửi tới Google chịu sự điều chỉnh của tài khoản đã cấu hình và chính sách của Google.",
-                ),
-                (
-                    "Credential nhạy cảm",
-                    "Private key ký và service-account credential được dùng cục bộ cho việc ký hoặc xác thực đã được cho phép. Ứng dụng không chủ ý công khai chúng hoặc đưa chúng vào file cấu hình project được xuất.",
-                ),
-                (
-                    "Quyền kiểm soát của người vận hành",
-                    "Bạn quyết định project, file, credential và Google Sheet nào được cấu hình. Bạn có thể xóa dữ liệu project cục bộ và thu hồi credential bên ngoài bất kỳ lúc nào.",
-                ),
-                (
-                    "Cam kết minh bạch",
-                    "Chúng tôi hướng tới việc thể hiện rõ thao tác mạng, không thu thập dữ liệu ngầm, báo lỗi minh bạch và cập nhật thông báo này khi hành vi ứng dụng thay đổi đáng kể.",
-                ),
-            ),
-        ),
-    },
-    "terms": {
-        "en": InformationContent(
-            "Terms of service",
-            "Effective 3 October 2026. By using License Admin, you agree to operate it responsibly and only for projects you are authorized to manage.",
-            (
-                (
-                    "Authorized use",
-                    "Use the application only to administer licenses, keys, credentials, and data that you own or are expressly authorized to manage. Do not use it to bypass access controls or violate applicable law.",
-                ),
-                (
-                    "Your responsibilities",
-                    "You are responsible for protecting private keys and credentials, validating project settings and recipients, maintaining backups, and reviewing data before publishing it to a configured Sheet.",
-                ),
-                (
-                    "Security and availability",
-                    "No software can guarantee uninterrupted operation or absolute security. Keep the application and operating system updated, restrict device access, and revoke any credential you suspect is compromised.",
-                ),
-                (
-                    "Data and consequences",
-                    "Signing, revoking, importing, exporting, and synchronizing can affect production access. Confirm the active project and keep recoverable backups before material changes.",
-                ),
-                (
-                    "Changes and fair notice",
-                    "Material changes to these terms or the application's data behavior should be communicated clearly. Continued use after notice indicates acceptance of the updated terms.",
-                ),
-            ),
-        ),
-        "vi": InformationContent(
-            "Điều khoản dịch vụ",
-            "Có hiệu lực từ 03/10/2026. Khi sử dụng License Admin, bạn đồng ý vận hành có trách nhiệm và chỉ quản lý những project mình được ủy quyền.",
-            (
-                (
-                    "Sử dụng được ủy quyền",
-                    "Chỉ dùng ứng dụng để quản trị license, key, credential và dữ liệu thuộc sở hữu của bạn hoặc được ủy quyền rõ ràng. Không dùng ứng dụng để vượt kiểm soát truy cập hoặc vi phạm pháp luật áp dụng.",
-                ),
-                (
-                    "Trách nhiệm của bạn",
-                    "Bạn chịu trách nhiệm bảo vệ private key và credential, xác minh cấu hình project và đối tượng nhận, duy trì bản sao lưu, đồng thời kiểm tra dữ liệu trước khi publish lên Sheet đã cấu hình.",
-                ),
-                (
-                    "Bảo mật và tính sẵn sàng",
-                    "Không phần mềm nào có thể bảo đảm hoạt động liên tục hoặc an toàn tuyệt đối. Hãy cập nhật ứng dụng và hệ điều hành, giới hạn quyền truy cập thiết bị và thu hồi credential nghi bị lộ.",
-                ),
-                (
-                    "Dữ liệu và hệ quả",
-                    "Việc ký, thu hồi, nhập, xuất và đồng bộ có thể ảnh hưởng quyền truy cập thực tế. Hãy xác nhận đúng project đang hoạt động và giữ bản sao lưu có thể khôi phục trước thay đổi quan trọng.",
-                ),
-                (
-                    "Thay đổi và thông báo công bằng",
-                    "Mọi thay đổi quan trọng đối với điều khoản hoặc hành vi dữ liệu của ứng dụng cần được thông báo rõ ràng. Việc tiếp tục sử dụng sau thông báo đồng nghĩa chấp nhận điều khoản cập nhật.",
-                ),
-            ),
-        ),
-    },
-}
-
-
-def _localized_content(document: str) -> InformationContent:
-    translations = _CONTENT[document]
-    return translations.get(current_language(), translations["en"])
+from license_admin.localization import text
+from license_admin.window_chrome import (
+    DraggableFrame,
+    FramelessResizeController,
+    enable_frameless_window,
+)
 
 
 class InformationDialog(QDialog):
@@ -203,13 +53,11 @@ class InformationDialog(QDialog):
 
     def __init__(self, parent: QWidget, document: str) -> None:
         super().__init__(parent)
-        content = _localized_content(document)
+        content, uses_english = document_content(document)
         enable_frameless_window(self)
         self.setObjectName("informationDialog")
         self.setWindowTitle(content.title)
         self.setModal(True)
-        self.setMinimumSize(620, 520)
-        self.resize(670, 570)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
@@ -230,7 +78,7 @@ class InformationDialog(QDialog):
 
         header = DraggableFrame()
         header.setObjectName("informationHeader")
-        header.setFixedHeight(72)
+        header.setMinimumHeight(72)
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(22, 12, 16, 12)
         header_layout.setSpacing(12)
@@ -250,6 +98,7 @@ class InformationDialog(QDialog):
         app_label.setObjectName("informationEyebrow")
         title_label = QLabel(content.title)
         title_label.setObjectName("informationTitle")
+        title_label.setWordWrap(True)
         heading.addWidget(app_label)
         heading.addWidget(title_label)
         header_layout.addLayout(heading, 1)
@@ -282,9 +131,28 @@ class InformationDialog(QDialog):
         body_layout.addWidget(summary)
         body_layout.addSpacing(24)
 
+        self.language_notice = QLabel(text("info.english_notice"))
+        self.language_notice.setObjectName("informationLanguageNotice")
+        self.language_notice.setWordWrap(True)
+        self.language_notice.setVisible(uses_english)
+        if uses_english:
+            body_layout.insertWidget(0, self.language_notice)
+            body_layout.insertSpacing(1, 16)
+
+        sections = content.sections
+        if document == "about":
+            sections = content.sections + (
+                (text("info.version"), APP_VERSION),
+                (
+                    text("info.channel"),
+                    text("info.packaged") if build_channel() == "packaged" else text("info.source"),
+                ),
+                (text("info.publisher"), APP_COMPANY_NAME),
+                (text("info.attribution"), text("info.attribution_body")),
+            )
         self.section_titles: list[QLabel] = []
         self.section_bodies: list[QLabel] = []
-        for index, (title, paragraph) in enumerate(content.sections, start=1):
+        for index, (title, paragraph) in enumerate(sections, start=1):
             section = QFrame()
             section.setObjectName("informationSection")
             section_layout = QHBoxLayout(section)
@@ -304,13 +172,11 @@ class InformationDialog(QDialog):
             copy_layout.setSpacing(5)
             section_title = QLabel(title)
             section_title.setObjectName("informationSectionTitle")
+            section_title.setWordWrap(True)
             section_body = QLabel(paragraph)
             section_body.setObjectName("informationSectionBody")
-            section_body.setWordWrap(True)
-            section_body.setSizePolicy(
-                QSizePolicy.Policy.Preferred,
-                QSizePolicy.Policy.Minimum,
-            )
+            # Size paragraphs at their actual width instead of their unwrapped size hint.
+            wrap_label(section_body, vertical_policy=QSizePolicy.Policy.Preferred)
             section_body.setTextInteractionFlags(
                 Qt.TextInteractionFlag.TextSelectableByMouse
             )
@@ -320,7 +186,7 @@ class InformationDialog(QDialog):
             copy_layout.addWidget(section_body)
             section_layout.addLayout(copy_layout, 1)
             body_layout.addWidget(section)
-            if index < len(content.sections):
+            if index < len(sections):
                 divider = QFrame()
                 divider.setObjectName("informationDivider")
                 divider.setFixedHeight(1)
@@ -363,13 +229,36 @@ class InformationDialog(QDialog):
         footer.setObjectName("informationFooter")
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(20, 9, 20, 9)
+        self.copy_diagnostics_button: QPushButton | None = None
+        if document == "about":
+            self.copy_diagnostics_button = QPushButton(text("info.copy_diagnostics"))
+            self.copy_diagnostics_button.setToolTip(text("info.diagnostics_note"))
+            self.copy_diagnostics_button.setAccessibleDescription(text("info.diagnostics_note"))
+            self.copy_diagnostics_button.clicked.connect(self._copy_diagnostics)
+            footer_layout.addWidget(self.copy_diagnostics_button)
+            notices = third_party_notices_path()
+            if notices is not None:
+                notices_button = QPushButton(text("info.open_notices"))
+                notices_button.clicked.connect(
+                    lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(notices)))
+                )
+                body_layout.insertWidget(body_layout.count() - 1, notices_button)
         footer_layout.addStretch(1)
         close_action = QPushButton(text("common.close"))
         close_action.setObjectName("informationCloseAction")
-        close_action.setFixedWidth(88)
+        close_action.setMinimumWidth(72)
         close_action.clicked.connect(self.accept)
         footer_layout.addWidget(close_action)
         surface_layout.addWidget(footer)
+        fit_window_to_screen(self, QSize(670, 570))
+        self._frameless_resize = FramelessResizeController(self)
+
+    def _copy_diagnostics(self) -> None:
+        clipboard = QApplication.clipboard()
+        clipboard.setText(diagnostics_text(self.parentWidget() or self))
+        announce(self, text("info.diagnostics_copied"))
+        if self.copy_diagnostics_button is not None:
+            self.copy_diagnostics_button.setText(text("info.diagnostics_copied"))
 
 
 class AboutDialog(InformationDialog):

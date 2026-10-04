@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from license_admin.icons import icon_pixmap
+from license_admin.responsive import WrappedLabel
 
 
 class TableStatePanel(QFrame):
@@ -43,18 +44,15 @@ class TableStatePanel(QFrame):
 
         self.title_label = QLabel()
         self.title_label.setObjectName("tableStateTitle")
+        self.title_label.setWordWrap(True)
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.title_label)
 
-        self.body_label = QLabel()
+        self.body_label = WrappedLabel()
         self.body_label.setObjectName("tableStateBody")
         self.body_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.body_label.setWordWrap(True)
         self.body_label.setMaximumWidth(560)
-        layout.addWidget(
-            self.body_label,
-            alignment=Qt.AlignmentFlag.AlignHCenter,
-        )
+        layout.addWidget(self.body_label, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         actions = QHBoxLayout()
         actions.setSpacing(8)

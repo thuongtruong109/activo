@@ -32,22 +32,12 @@ QFrame#sidebarHeader {
 QFrame#windowControls { background: transparent; border: 0; }
 QPushButton#trafficClose, QPushButton#trafficMinimize, QPushButton#trafficMaximize {
     background: transparent;
-    color: #9db0c1;
     border: 0;
-    border-radius: 5px;
     padding: 0;
-    min-width: 32px;
-    max-width: 32px;
+    min-width: 20px;
+    max-width: 20px;
     min-height: 32px;
     max-height: 32px;
-    font-family: "Segoe UI Symbol";
-    font-size: 15px;
-    font-weight: 600;
-}
-QPushButton#trafficClose:hover { background: #c42b36; color: #ffffff; }
-QPushButton#trafficMinimize:hover, QPushButton#trafficMaximize:hover {
-    background: #173043;
-    color: #ffffff;
 }
 QWidget#headerBrand { background: transparent; }
 QLabel#brandName { color: #f6f9fc; font-size: 11px; font-weight: 750; }
@@ -65,10 +55,19 @@ QFrame#headerInfoGroup {
 }
 QToolButton#headerInfoButton {
     background: transparent;
-    border: 0;
+    border: 1px solid transparent;
     border-radius: 6px;
-    padding: 0;
+    padding: 0 24px 0 8px;
 }
+QToolButton#headerInfoButton[compact="true"] { padding: 0; }
+QToolButton#headerInfoButton::menu-indicator {
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    right: 7px;
+    width: 12px;
+    height: 12px;
+}
+QToolButton#headerInfoButton[compact="true"]::menu-indicator { image: none; width: 0; height: 0; }
 QToolButton#headerInfoButton:hover {
     background: #173043;
 }
@@ -194,9 +193,6 @@ QLineEdit, QComboBox, QDateEdit, QTextEdit, QSpinBox {
 }
 QLineEdit:hover, QComboBox:hover, QDateEdit:hover, QTextEdit:hover, QSpinBox:hover {
     border-color: #355166;
-}
-QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QTextEdit:focus, QSpinBox:focus {
-    border-color: #12aeda;
 }
 QCalendarWidget {
     background: #0b1520;
@@ -549,7 +545,8 @@ _MENU_CHECK_LIGHT_URL = (
 ).as_posix()
 ADMIN_STYLESHEET += f"""
 QComboBox::down-arrow, QDateEdit::down-arrow,
-QToolButton[popover="true"]::menu-indicator {{
+QToolButton[popover="true"]::menu-indicator,
+QToolButton#headerInfoButton::menu-indicator {{
     image: url(\"{_DOWN_ARROW_URL}\");
     width: 12px;
     height: 12px;
@@ -772,13 +769,6 @@ QFrame#tableStatePanel { background: #ffffff; }
 QLabel#tableStateIcon { background: #e7f5fa; border-color: #b8dfea; }
 QLabel#tableStateTitle { color: #1f2d3d; }
 QLabel#tableStateBody { color: #4b5d73; }
-QPushButton#trafficClose, QPushButton#trafficMinimize, QPushButton#trafficMaximize {
-    color: #526477;
-}
-QPushButton#trafficMinimize:hover, QPushButton#trafficMaximize:hover {
-    background: #dde6ef;
-    color: #172435;
-}
 """
 LIGHT_OVERRIDES += f"""
 QMenu#roundedPopover::indicator:checked {{
@@ -792,7 +782,6 @@ class SemanticPalette:
     """Theme tokens whose contrast must not depend on inherited widget colors."""
 
     surface: str
-    focus_ring: str
     text_muted: str
     text_subtle: str
     link: str
@@ -806,7 +795,6 @@ class SemanticPalette:
 
 DARK_PALETTE = SemanticPalette(
     surface="#07111b",
-    focus_ring="#ffd166",
     text_muted="#a6b4c2",
     text_subtle="#8fa3b5",
     link="#74d7ff",
@@ -819,7 +807,6 @@ DARK_PALETTE = SemanticPalette(
 )
 LIGHT_PALETTE = SemanticPalette(
     surface="#ffffff",
-    focus_ring="#005fcc",
     text_muted="#4b5d73",
     text_subtle="#526477",
     link="#075985",
@@ -833,35 +820,43 @@ LIGHT_PALETTE = SemanticPalette(
 
 
 def _semantic_overrides(palette: SemanticPalette) -> str:
-    """Render focus and readable metadata after all component overrides."""
+    """Render readable metadata and focus preferences after component overrides."""
     return f"""
 QLabel#metricTitle, QLabel#metricNote, QLabel#muted,
-QLabel#busyStatus, QLabel#tableStateBody {{ color: {palette.text_muted}; }}
+QLabel#busyStatus, QLabel#tableStateBody, QLabel#operationStep,
+QLabel#operationElapsed {{ color: {palette.text_muted}; }}
+QFrame#operationBar {{ background: {palette.surface}; border-bottom: 1px solid {palette.text_subtle}; }}
+QLabel#informationLanguageNotice {{ color: {palette.link}; font-weight: 600; }}
+QScrollArea#responsiveScroll, QScrollArea#dashboardScroll,
+QScrollArea#sidebarScroll {{ background: transparent; border: 0; }}
 QLabel#informationEyebrow, QLabel#informationSectionBody,
 QHeaderView::section {{ color: {palette.text_subtle}; }}
+QLabel#projectMenuHeading {{ color: {palette.text_subtle}; font-size: 11px; font-weight: 600; }}
 QTabBar::tab:!selected,
 QPushButton#themeLightTab[active="false"],
 QPushButton#themeDarkTab[active="false"] {{ color: {palette.text_subtle}; }}
 QLabel#projectSelectorAvatar, QLabel#informationSectionIndex,
 QLabel#informationContactLink {{ color: {palette.link}; }}
 
-QPushButton:focus, QToolButton:focus,
+QWidget:focus, QPushButton:focus, QToolButton:focus,
 QPushButton#primaryButton:focus,
 QToolButton#sidebarToggle:focus, QToolButton#headerInfoButton:focus,
 QPushButton#sidebarButton:focus, QToolButton#sidebarButton:focus,
 QToolButton#projectSelector:focus,
+QToolButton#languageSelect:focus,
+QPushButton#informationCloseAction:focus, QMenu#roundedPopover:focus,
 QPushButton#themeLightTab:focus, QPushButton#themeDarkTab:focus,
 QPushButton#trafficClose:focus, QPushButton#trafficMinimize:focus,
 QPushButton#trafficMaximize:focus, QToolButton#modalCloseButton:focus,
 QToolButton#informationCloseButton:focus {{
-    border: 2px solid {palette.focus_ring};
+    border-color: transparent;
 }}
 QLineEdit:focus, QComboBox:focus, QDateEdit:focus,
 QTextEdit:focus, QSpinBox:focus, QTabBar:focus {{
-    border: 2px solid {palette.focus_ring};
+    border-color: transparent;
 }}
 QTableView:focus, QCalendarWidget QAbstractItemView:focus {{
-    border: 2px solid {palette.focus_ring};
+    border-color: transparent;
 }}
 """
 

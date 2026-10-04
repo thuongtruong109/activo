@@ -114,6 +114,42 @@ Trong **Cài đặt → Google Sheets** cũng có nút **Nhập JSON vào projec
 thể tiếp tục trỏ đến file ngoài project, nhưng file vẫn được kiểm tra đầy đủ
 trước khi lưu settings.
 
+## Thông tin ứng dụng và trạng thái thao tác
+
+Nút **Trợ giúp / Thông tin** trên header (hoặc **F1**) mở menu **Giới thiệu**,
+**Riêng tư & Minh bạch** và **Điều khoản dịch vụ**. Chỉ **Giới thiệu** có liên
+hệ hỗ trợ, phiên bản, nhà phát hành, ghi nhận bên thứ ba và **Sao chép chẩn
+đoán**. Chẩn đoán gồm thông tin ứng dụng, môi trường chạy và màn hình; không
+chứa credential, đường dẫn project hoặc bản ghi license. Kênh build phân biệt
+bản chạy từ mã nguồn với bản đóng gói; chưa gán nhãn stable/beta.
+
+Tài liệu hiện có bằng tiếng Anh và tiếng Việt. Với năm ngôn ngữ giao diện còn
+lại, modal hiển thị thông báo bằng ngôn ngữ đang chọn rằng tài liệu hiện có
+bằng tiếng Anh.
+
+Policy liệt kê bảy claim trong JWT do ứng dụng phát hành: `username`, `hwid`,
+`jti`, `iat`, `exp`, `iss`, `aud`. JWT và manifest được ký, không được mã hóa;
+người có token có thể đọc payload mà không cần private key. Feed export và
+Google Sheet chứa token đầy đủ. Quyền truy cập công khai do chủ Sheet cấu hình.
+Xem [RFC 7519 về dữ liệu riêng tư trong JWT](https://www.rfc-editor.org/rfc/rfc7519.html#section-12)
+và [hướng dẫn publish của Google](https://support.google.com/docs/answer/183965?hl=en).
+
+Ứng dụng không tự hết hạn lưu trữ hay dọn bản ghi, journal, `.backups` và feed
+export. Clipboard chỉ được ghi khi người dùng sao chép và không tự xóa khi
+thoát; lịch sử/đồng bộ clipboard do hệ điều hành quản lý. Policy cũng mô tả
+Google, host feed và request icon FlagCDN. Yêu cầu cập nhật/xóa dữ liệu cần gửi
+đến bên phát hành license hoặc chủ project và rà soát các bản sao liên quan;
+thu hồi license vẫn giữ tombstone và không đồng nghĩa xóa dữ liệu.
+
+Thanh thao tác dưới header hiển thị thao tác, bước hiện tại và thời gian chạy.
+**Hủy** chỉ có ở bước đọc/kiểm tra: ứng dụng chờ request hiện tại hoàn tất rồi
+bỏ kết quả, không áp dụng thay đổi. Bước publish hoặc áp dụng dữ liệu đã xác
+nhận không có nút hủy. Khi lỗi, **Thử lại** chạy lại luồng kiểm tra và xác nhận.
+
+Cửa sổ hẹp tự thu gọn sidebar, chia header/metric thành nhiều hàng và cho phép
+cuộn nội dung. Các modal thông tin, cài đặt và import có vùng cuộn riêng, đồng
+thời giới hạn kích thước mở ban đầu theo vùng màn hình khả dụng của Qt.
+
 ## Self-host bằng Docker
 
 Docker chỉ dành cho desktop riêng của **một người vận hành tin cậy**, không phải

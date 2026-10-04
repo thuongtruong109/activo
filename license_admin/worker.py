@@ -11,6 +11,7 @@ from PySide6.QtCore import QThread, Signal
 class OperationThread(QThread):
     succeeded = Signal(object)
     failed = Signal(str)
+    cancelled = Signal()
 
     def __init__(self, operation: Callable[[], Any]) -> None:
         super().__init__()
@@ -20,6 +21,12 @@ class OperationThread(QThread):
         try:
             result = self._operation()
         except Exception as exc:  # surfaced to the GUI boundary
-            self.failed.emit(str(exc))
+            if self.isInterruptionRequested():
+                self.cancelled.emit()
+            else:
+                self.failed.emit(str(exc))
         else:
-            self.succeeded.emit(result)
+            if self.isInterruptionRequested():
+                self.cancelled.emit()
+            else:
+                self.succeeded.emit(result)

@@ -17,9 +17,10 @@ from PySide6.QtWidgets import (
 )
 
 from license_admin.localization import text
+from license_admin.traffic_light_button import TrafficLightButton
 
 
-APP_HEADER_HEIGHT = 58
+APP_HEADER_HEIGHT = 44
 
 
 def enable_frameless_window(window: QWidget) -> None:
@@ -55,7 +56,7 @@ class DraggableFrame(QFrame):
 
 
 class WindowControls(DraggableFrame):
-    """Compact window controls ordered like the Windows title bar."""
+    """Close, minimize and maximize actions shown as three traffic lights."""
 
     def __init__(self, target: QWidget) -> None:
         super().__init__()
@@ -64,25 +65,22 @@ class WindowControls(DraggableFrame):
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(2, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.close_button = self._button(
+            "trafficClose",
+            text("chrome.close"),
+            target.close,
+        )
         self.minimize_button = self._button(
             "trafficMinimize",
             text("chrome.minimize"),
-            "−",
             target.showMinimized,
         )
         self.maximize_button = self._button(
             "trafficMaximize",
             text("chrome.maximize"),
-            "□",
             lambda: _toggle_maximized(target),
-        )
-        self.close_button = self._button(
-            "trafficClose",
-            text("chrome.close"),
-            "×",
-            target.close,
         )
         layout.addWidget(self.minimize_button)
         layout.addWidget(self.maximize_button)
@@ -107,7 +105,6 @@ class WindowControls(DraggableFrame):
     def _update_maximize_control(self) -> None:
         maximized = self._target.isMaximized()
         label = text("chrome.restore" if maximized else "chrome.maximize")
-        self.maximize_button.setText("❐" if maximized else "□")
         self.maximize_button.setToolTip(label)
         self.maximize_button.setAccessibleName(label)
 
@@ -115,16 +112,11 @@ class WindowControls(DraggableFrame):
         self,
         object_name: str,
         tooltip: str,
-        glyph: str,
         callback: Callable[[], object],
     ) -> QPushButton:
-        button = QPushButton(glyph)
-        button.setObjectName(object_name)
+        button = TrafficLightButton(object_name)
         button.setToolTip(tooltip)
         button.setAccessibleName(tooltip)
-        button.setFixedSize(32, 32)
-        button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.clicked.connect(callback)
         return button
 
