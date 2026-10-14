@@ -83,6 +83,7 @@ from license_admin.feed_manifest import (
     sign_feed,
     verify_feed,
 )
+from license_admin.feed_format import LEGACY, parse_publication_csv, publication_digest, serialize_legacy_feed
 from license_admin.flag_icons import FlagIconLoader
 from license_admin.icons import svg_icon
 from license_admin.info_menu import InformationMenuButton
@@ -114,6 +115,8 @@ from license_admin.project_config import (
 )
 from license_admin.project_lock import ProjectLease, ProjectLockError
 from license_admin.project_selector import ProjectSelector
+from license_admin.publication_panel import PublicationPanel
+from license_admin.revocation_dialog import RevocationDialog
 from license_admin.qt_models import LicenseFilterModel, LicenseTableModel
 from license_admin.record_transaction import RecordTransaction
 from license_admin.revocations import (
@@ -124,6 +127,8 @@ from license_admin.revocations import (
     mark_revoked,
     merge_published_tombstones,
     request_revocation,
+    request_device_removal,
+    merge_disabled_hwids,
 )
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.settings import AdminSettings, ProjectStore, normalize_project_id
@@ -244,8 +249,12 @@ class LicenseAdminWindow(QMainWindow):
         self.revoke_action = QAction(svg_icon("trash"), text("action.revoke"), self)
         self.revoke_action.setShortcut("Delete")
         self.revoke_action.triggered.connect(self._revoke_license)
+        self.remove_action = QAction(svg_icon("trash"), text("action.remove_device"), self)
+        self.remove_action.triggered.connect(self._remove_license)
         self.details_action = QAction(svg_icon("eye"), text("action.details"), self)
         self.details_action.triggered.connect(self._show_details)
+        self.revocation_history_action = QAction(text("publication.review"), self)
+        self.revocation_history_action.triggered.connect(self._show_revocations)
         self.pull_action = QAction(svg_icon("download"), text("action.pull_sheet"), self)
         self.pull_action.setShortcut("Ctrl+Shift+D")
         self.pull_action.triggered.connect(self._pull_sheet)
@@ -469,6 +478,10 @@ class LicenseAdminWindow(QMainWindow):
             self._open_project_folder
         )
         root.addWidget(self.data_state_banner)
+        self.publication_panel = PublicationPanel()
+        self.publication_panel.publish_requested.connect(self._push_sheet)
+        self.publication_panel.review_requested.connect(self._show_revocations)
+        root.addWidget(self.publication_panel)
 
         self.metrics_layout = QGridLayout()
         self.metrics_layout.setSpacing(8)
@@ -566,7 +579,17 @@ class LicenseAdminWindow(QMainWindow):
             QSizePolicy.Policy.Fixed,
             QSizePolicy.Policy.Fixed,
         )
-        table_header_layout.addWidget(self.sync_badge, 0, 2)
+        self.sync_controls = QWidget()
+        sync_layout = QHBoxLayout(self.sync_controls)
+        sync_layout.setContentsMargins(0, 0, 0, 0)
+        sync_layout.setSpacing(8)
+        sync_layout.addWidget(self.sync_badge)
+        self.publish_button = QPushButton(text("publication.short"))
+        self.publish_button.setIcon(svg_icon("upload", 16))
+        self.publish_button.clicked.connect(self.push_action.trigger)
+        self.publish_button.setToolTip(text("publication.publish"))
+        sync_layout.addWidget(self.publish_button)
+        table_header_layout.addWidget(self.sync_controls, 0, 2)
         table_panel_layout.addWidget(self.table_header)
 
         self.table_model = LicenseTableModel(self._theme_mode)
@@ -582,7 +605,7 @@ class LicenseAdminWindow(QMainWindow):
         self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
-        self.table.doubleClicked.connect(lambda _index: self._edit_license())
+        self.table.doubleClicked.connect(lambda _index: self._open_selected_device())
         horizontal_header = self.table.horizontalHeader()
         horizontal_header.setStretchLastSection(True)
         horizontal_header.setMinimumSectionSize(72)
@@ -647,7 +670,10 @@ class LicenseAdminWindow(QMainWindow):
         self.license_menu.addAction(self.new_action)
         self.license_menu.addAction(self.edit_action)
         self.license_menu.addAction(self.revoke_action)
+        self.license_menu.addAction(self.remove_action)
         self.license_menu.addAction(self.details_action)
+        self.license_menu.addSeparator()
+        self.license_menu.addAction(self.revocation_history_action)
         self.sheet_menu = RoundedMenu(text("nav.sheets"), self)
         self.sheet_menu.addAction(self.pull_action)
         self.sheet_menu.addAction(self.push_action)
@@ -682,6 +708,7 @@ class LicenseAdminWindow(QMainWindow):
             ("status.expired", LicenseStatus.EXPIRED),
             ("status.future", LicenseStatus.FUTURE),
             ("status.invalid", LicenseStatus.INVALID),
+            ("status.revoked", LicenseStatus.REVOKED),
         ):
             self.status_combo.add_item(text(label_key), status)
         self.status_combo.set_current_data(selected)
@@ -713,6 +740,7 @@ class LicenseAdminWindow(QMainWindow):
             (self.new_action, "action.new_license"),
             (self.edit_action, "action.edit_license"),
             (self.revoke_action, "action.revoke"),
+            (self.remove_action, "action.remove_device"),
             (self.details_action, "action.details"),
             (self.pull_action, "action.pull_sheet"),
             (self.push_action, "action.push_sheet"),
@@ -738,6 +766,9 @@ class LicenseAdminWindow(QMainWindow):
         self.theme_toggle.retranslate()
         self.project_combo.retranslate()
         self.info_button.retranslate()
+        self.revocation_history_action.setText(text("publication.review"))
+        self.publish_button.setText(text("publication.short"))
+        self.publish_button.setToolTip(text("publication.publish"))
         self.operation_bar.retranslate()
         self.overview_button.set_label(text("nav.overview"))
         self.new_sidebar_button.set_label(text("action.new_license"))
@@ -788,12 +819,25 @@ class LicenseAdminWindow(QMainWindow):
             "revocation_pending": "sync.revocation_pending",
             "revoked_pending": "sync.revoked_pending",
         }.get(state, "sync.unsynced")
-        self.sync_badge.setText(text(key))
+        self.sync_badge.setText(text("publication.unpublished")
+                               if state in {"dirty", "revocation_pending", "revoked_pending"} else text(key))
+        self.sync_badge.setToolTip(text(key))
         self.sync_badge.setAccessibleName(text("accessibility.sync_status"))
         self.sync_badge.setAccessibleDescription(text(key))
         self.sync_badge.setProperty("synced", state == "synced")
         self.sync_badge.style().unpolish(self.sync_badge)
         self.sync_badge.style().polish(self.sync_badge)
+        self._refresh_publication_panel()
+
+    def _refresh_publication_panel(self) -> None:
+        if not hasattr(self, "publication_panel"):
+            return
+        self.publication_panel.update_state(
+            state=self._sync_badge_state, has_data=bool(self._records or self._revocations),
+            pending_revocations=sum(entry.phase is not RevocationPhase.PUBLISHED for entry in self._revocations),
+            revocation_count=len(self._revocations), writable=self._data_state.allows_writes,
+            busy=self._busy, sheet_configured=bool(self._settings.spreadsheet_id and self._settings.service_account_path),
+        )
 
     def _set_project_identity(self) -> None:
         self.setWindowTitle(f"{self._settings.project_name} — License Admin")
@@ -1334,7 +1378,11 @@ class LicenseAdminWindow(QMainWindow):
     def _update_data_state_banner(self) -> None:
         if not hasattr(self, "data_state_banner"):
             return
-        if self._data_state is ProjectDataState.READY:
+        has_retained_devices = (
+            self._data_state is ProjectDataState.EMPTY
+            and any(not entry.remove_device for entry in self._revocations)
+        )
+        if self._data_state is ProjectDataState.READY or has_retained_devices:
             self.data_state_banner.hide()
             return
         body_key = {
@@ -1345,10 +1393,11 @@ class LicenseAdminWindow(QMainWindow):
             ProjectDataState.UNAVAILABLE: "data.unavailable_body",
         }.get(self._data_state, "data.unavailable_body")
         recovery = not self._data_state.allows_writes
+        has_history = self._data_state is ProjectDataState.EMPTY and bool(self._revocations)
         self.data_state_banner.set_content(
             state=self._data_state.value,
-            title=self._data_state_title(),
-            body=text(body_key),
+            title=text("data.history_title") if has_history else self._data_state_title(),
+            body=text("data.history_body") if has_history else text(body_key),
             retry_label=text("data.retry"),
             open_folder_label=text("action.open_project_folder"),
             recovery=recovery,
@@ -1377,14 +1426,14 @@ class LicenseAdminWindow(QMainWindow):
             ) from exc
 
     def _refresh_view(self) -> None:
-        self.table_model.set_records(self._records)
+        self.table_model.set_records(self._records, self._revocations)
         statuses = [record.status() for record in self._records]
         active_count = statuses.count(LicenseStatus.ACTIVE)
         expiring_count = statuses.count(LicenseStatus.EXPIRING)
         expired_count = statuses.count(LicenseStatus.EXPIRED)
         invalid_count = statuses.count(LicenseStatus.INVALID)
         if self._data_state.allows_writes:
-            self.total_card.set_value(len(self._records))
+            self.total_card.set_value(self.table_model.rowCount())
             self.active_card.set_value(active_count)
             self.expiring_card.set_value(expiring_count)
             self.expired_card.set_value(expired_count + invalid_count)
@@ -1403,7 +1452,7 @@ class LicenseAdminWindow(QMainWindow):
             text(
                 "table.visible",
                 visible=self.proxy_model.rowCount(),
-                total=len(self._records),
+                total=self.table_model.rowCount(),
             )
         )
         self._refresh_table_state()
@@ -1484,7 +1533,7 @@ class LicenseAdminWindow(QMainWindow):
             )
             return
 
-        if not self._records:
+        if self.table_model.rowCount() == 0:
             setup_complete = (
                 self._settings.signing_key_path.is_file()
                 and self._settings.public_key_path.is_file()
@@ -1610,15 +1659,20 @@ class LicenseAdminWindow(QMainWindow):
 
     def _filter_status_changed(self, _value: object | None = None) -> None:
         status = self.status_combo.current_data()
-        self.proxy_model.set_status(status if isinstance(status, LicenseStatus) else None)
+        # QAction stores str enums as plain strings in its QVariant data.
+        self.proxy_model.set_status(LicenseStatus(status) if isinstance(status, str) else None)
         self._refresh_visible_count()
 
     def _selection_changed(self, _selected: QItemSelection | None = None, _deselected: QItemSelection | None = None) -> None:
-        selected = self._selected_record() is not None
-        self.edit_action.setEnabled(
-            selected and not self._busy and self._data_state.allows_writes
+        record = self._selected_record()
+        selected = record is not None
+        editable = (
+            record is not None and not self.table_model.is_revoked(record.hwid)
+            and not self._busy and self._data_state.allows_writes
         )
-        self.revoke_action.setEnabled(
+        self.edit_action.setEnabled(editable)
+        self.revoke_action.setEnabled(editable)
+        self.remove_action.setEnabled(
             selected and not self._busy and self._data_state.allows_writes
         )
         self.details_action.setEnabled(selected and not self._busy)
@@ -1638,9 +1692,11 @@ class LicenseAdminWindow(QMainWindow):
         menu.addAction(self.details_action)
         menu.addAction(self.edit_action)
         menu.addAction(self.revoke_action)
+        menu.addAction(self.remove_action)
         menu.addSeparator()
         copy_hwid = menu.addAction(text("details.copy_hwid"))
         copy_token = menu.addAction(text("details.copy_token"))
+        copy_token.setEnabled(bool(record.token))
         selected = menu.exec(self.table.viewport().mapToGlobal(position))
         if selected is copy_hwid:
             QApplication.clipboard().setText(record.hwid)
@@ -1688,13 +1744,22 @@ class LicenseAdminWindow(QMainWindow):
             return
         self._apply_license_editor(dialog, None)
 
+    def _open_selected_device(self) -> None:
+        if self._busy:
+            return
+        record = self._selected_record()
+        if record is not None and self.table_model.is_revoked(record.hwid):
+            self._show_details()
+        else:
+            self._edit_license()
+
     def _edit_license(self) -> None:
         if self._busy:
             return
         if not self._ensure_data_writable():
             return
         record = self._selected_record()
-        if record is None:
+        if record is None or self.table_model.is_revoked(record.hwid):
             return
         dialog = LicenseEditorDialog(self, record)
         if dialog.exec() != dialog.DialogCode.Accepted:
@@ -1776,7 +1841,7 @@ class LicenseAdminWindow(QMainWindow):
         if not self._ensure_data_writable():
             return
         record = self._selected_record()
-        if record is None:
+        if record is None or self.table_model.is_revoked(record.hwid):
             return
         answer = QMessageBox.question(
             self,
@@ -1796,10 +1861,38 @@ class LicenseAdminWindow(QMainWindow):
         if self._commit_license_state(transaction, revocations) is not None:
             self._notify(text("license.revocation_pending"), tone="info")
 
+    def _remove_license(self) -> None:
+        record = self._selected_record()
+        if record is not None:
+            self._request_device_removal(record)
+
+    def _request_device_removal(self, record: LicenseRecord) -> None:
+        if self._busy or not self._ensure_data_writable():
+            return
+        if QMessageBox.question(self, text("action.remove_device"),
+                                text("license.remove_body", name=record.username or record.hwid),
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                                QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
+            return
+        revocations = request_device_removal(self._revocations, record)
+        if self._commit_license_state(RecordTransaction.revoke(self._records, record.hwid), revocations):
+            self._notify(text("license.removal_pending"), tone="info")
+
     def _show_details(self) -> None:
         record = self._selected_record()
         if record is not None:
             RecordDetailsDialog(self, record).exec()
+
+    def _show_revocations(self) -> None:
+        dialog = RevocationDialog(self, self._revocations, can_publish=self.push_action.isEnabled())
+        def remove(hwid: str) -> None:
+            entry = next((item for item in self._revocations if item.hwid == hwid), None)
+            if entry is not None:
+                self._request_device_removal(LicenseRecord(hwid=hwid, token="", username=entry.username))
+                dialog.set_entries(self._revocations)
+        dialog.remove_requested.connect(remove)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            self._push_sheet()
 
     def _merge_imported(
         self,
@@ -1817,7 +1910,7 @@ class LicenseAdminWindow(QMainWindow):
         except LicenseIssueError as exc:
             QMessageBox.critical(self, text("import.failed"), str(exc))
             return False
-        if not imported and (feed is None or not feed.tombstones):
+        if not imported and (feed is None or not (feed.tombstones or feed.disabled_hwids)):
             self._notify(text("import.empty"), tone="info")
             return True
         box = QMessageBox(self)
@@ -1842,13 +1935,13 @@ class LicenseAdminWindow(QMainWindow):
         if feed is not None:
             manifest = feed.manifest
             if manifest is None:
-                raise RuntimeError("Verified imported feed has no manifest.")
-            revocations = merge_published_tombstones(
-                revocations,
-                feed.tombstones,
-                revision=manifest.revision,
-                published_at=manifest.generated_at,
-            )
+                revocations = merge_disabled_hwids(revocations, feed.disabled_hwids,
+                                                   self._records, revision=None)
+            else:
+                revocations = merge_published_tombstones(
+                    revocations, feed.tombstones,
+                    revision=manifest.revision, published_at=manifest.generated_at,
+                )
             revoked_hwids = {entry.hwid for entry in revocations}
             transaction = RecordTransaction.sorted_records(
                 record
@@ -1872,7 +1965,7 @@ class LicenseAdminWindow(QMainWindow):
             return
         try:
             content = Path(filename).read_text(encoding="utf-8-sig")
-            feed = parse_feed_csv(content, allow_legacy=True)
+            feed = parse_publication_csv(content)
             if feed.manifest_token:
                 public_keys, issuer, audience = self._verification_values()
                 feed = verify_feed(
@@ -1893,7 +1986,7 @@ class LicenseAdminWindow(QMainWindow):
         self._merge_imported(
             imported,
             Path(filename).name,
-            feed=feed if feed.manifest_token else None,
+            feed=feed if feed.manifest_token or feed.disabled_hwids else None,
         )
 
     def _import_legacy(self) -> None:
@@ -1935,6 +2028,14 @@ class LicenseAdminWindow(QMainWindow):
             f"CSV (*.csv);;{text('common.all_files')}",
         )
         if not filename:
+            return
+        if self._settings.feed_format == LEGACY:
+            try:
+                Path(filename).write_text(serialize_legacy_feed(self._legacy_feed()), encoding="utf-8", newline="")
+            except OSError as exc:
+                QMessageBox.critical(self, text("export.failed"), str(exc))
+                return
+            self._notify(text("export.done", count=len(self._records)))
             return
         signing_key = self._load_signing_key()
         if signing_key is None:
@@ -1979,10 +2080,17 @@ class LicenseAdminWindow(QMainWindow):
         return tuple(entry.tombstone() for entry in self._revocations)
 
     def _local_publication_digest(self) -> str:
+        if self._settings.feed_format == LEGACY:
+            return publication_digest(self._legacy_feed())
         return publication_content_digest(
             self._records,
             self._local_tombstones(),
         )
+
+    def _legacy_feed(self) -> FeedDocument:
+        return FeedDocument(tuple(self._records), (), disabled_hwids=tuple(
+            entry.hwid for entry in self._revocations if not entry.remove_device
+        ))
 
     def _sheet_target(self, config: GoogleSheetsConfig) -> SyncTarget:
         return SyncTarget(
@@ -2202,6 +2310,7 @@ class LicenseAdminWindow(QMainWindow):
         baseline_changed: bool = False,
         guard_mismatch: bool = False,
         tombstone_count: int = 0,
+        upgrade_layout: bool = False,
     ) -> bool:
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning if diff.removed else QMessageBox.Icon.Question)
@@ -2220,6 +2329,13 @@ class LicenseAdminWindow(QMainWindow):
             )
         )
         warnings: list[str] = []
+        if direction is SyncDirection.PUSH:
+            format_key = "sheet.preview_legacy" if self._settings.feed_format == LEGACY else "sheet.preview_format"
+            warnings.append(text(format_key, project=self._settings.project_name,
+                                 worksheet=self._settings.worksheet))
+            if upgrade_layout:
+                warnings.append(text("sheet.preview_downgrade" if self._settings.feed_format == LEGACY
+                                     else "sheet.preview_upgrade"))
         if first_push:
             warnings.append(text("sheet.preview_first_push"))
         if baseline_changed:
@@ -2228,11 +2344,21 @@ class LicenseAdminWindow(QMainWindow):
             warnings.append(text("sheet.preview_manual_change"))
         if tombstone_count:
             warnings.append(
-                text("sheet.preview_tombstones", count=tombstone_count)
+                text("sheet.preview_legacy_actions" if self._settings.feed_format == LEGACY
+                     else "sheet.preview_tombstones", count=tombstone_count)
             )
         if warnings:
             box.setInformativeText("\n\n".join(warnings))
-        box.setDetailedText(self._sync_diff_details(diff))
+        details = self._sync_diff_details(diff)
+        if direction is SyncDirection.PUSH:
+            requests = [
+                f"{text('action.remove_device' if entry.remove_device else 'action.revoke')}: "
+                f"{entry.username or entry.hwid} | {entry.hwid}"
+                for entry in self._revocations if entry.phase is not RevocationPhase.PUBLISHED
+            ]
+            if requests:
+                details += "\n\n" + "\n".join(requests)
+        box.setDetailedText(details)
         confirm = box.addButton(
             text(
                 "sheet.preview_publish"
@@ -2287,6 +2413,8 @@ class LicenseAdminWindow(QMainWindow):
     ) -> RemoteSnapshot:
         public_keys, issuer, audience = verification
         if not snapshot.manifest_token:
+            if self._settings.feed_format == LEGACY:
+                return replace(snapshot, records=tuple(self._verify_pulled_records(snapshot.records, verification)))
             if require_manifest:
                 raise LicenseIssueError(
                     "The remote license feed has no signed v2 manifest."
@@ -2340,6 +2468,8 @@ class LicenseAdminWindow(QMainWindow):
         *,
         minimum_revision: int,
     ) -> FeedDocument:
+        if not document.manifest_token and self._settings.feed_format == LEGACY:
+            return replace(document, records=tuple(self._verify_pulled_records(document.records, verification)))
         public_keys, issuer, audience = verification
         verified = verify_feed(
             document,
@@ -2383,7 +2513,7 @@ class LicenseAdminWindow(QMainWindow):
         def operation() -> RemoteSnapshot | FeedDocument:
             if public_url:
                 return self._verify_public_feed(
-                    download_public_feed(public_url),
+                    download_public_feed(public_url, allow_legacy=self._settings.feed_format == LEGACY),
                     verification,
                     target,
                     minimum_revision=minimum_revision,
@@ -2473,14 +2603,14 @@ class LicenseAdminWindow(QMainWindow):
         def operation() -> RemoteSnapshot | FeedDocument:
             if public_url:
                 current = self._verify_public_feed(
-                    download_public_feed(public_url),
+                    download_public_feed(public_url, allow_legacy=self._settings.feed_format == LEGACY),
                     verification,
                     context.target,
                     minimum_revision=minimum_revision,
                 )
                 if (
                     reviewed_public is None
-                    or feed_digest(current) != feed_digest(reviewed_public)
+                    or publication_digest(current) != publication_digest(reviewed_public)
                 ):
                     raise SheetConflictError(
                         "The public CSV changed after the sync preview."
@@ -2513,13 +2643,17 @@ class LicenseAdminWindow(QMainWindow):
                 raise RuntimeError("Unexpected feed pull result.")
             manifest = result.manifest
             if manifest is None:
-                raise RuntimeError("Verified feed has no manifest.")
-            revocations = merge_published_tombstones(
-                self._revocations,
-                result.tombstones,
-                revision=manifest.revision,
-                published_at=manifest.generated_at,
-            )
+                if self._settings.feed_format != LEGACY:
+                    raise RuntimeError("Verified feed has no manifest.")
+                legacy_revision = (result.revision.generation if isinstance(result, RemoteSnapshot)
+                                   and result.revision and result.guard_matches_data else None)
+                revocations = merge_disabled_hwids(self._revocations, result.disabled_hwids,
+                                                  self._records, revision=legacy_revision)
+            else:
+                revocations = merge_published_tombstones(
+                    self._revocations, result.tombstones,
+                    revision=manifest.revision, published_at=manifest.generated_at,
+                )
             revoked_hwids = {entry.hwid for entry in revocations}
             records = [
                 record for record in result.records if record.hwid not in revoked_hwids
@@ -2549,6 +2683,10 @@ class LicenseAdminWindow(QMainWindow):
                         tone="info",
                     )
             else:
+                if manifest is None:
+                    self._set_pending_sync_badge()
+                    self._notify(text("sheet.pulled_public", count=len(committed.records)), tone="info")
+                    return
                 remote_content_digest = publication_content_digest(
                     result.records,
                     result.tombstones,
@@ -2640,6 +2778,8 @@ class LicenseAdminWindow(QMainWindow):
                 baseline_changed=baseline_changed,
                 guard_mismatch=guard_mismatch,
                 tombstone_count=len(self._revocations),
+                upgrade_layout=(self._settings.feed_format != LEGACY and not remote.manifest_token)
+                or (self._settings.feed_format == LEGACY and bool(remote.manifest_token)),
             ):
                 return
             self._queue_after_operation(
@@ -2671,8 +2811,8 @@ class LicenseAdminWindow(QMainWindow):
         if not self._sync_context_is_current(context):
             self._set_sync_badge("dirty")
             return
-        signing_key = self._load_signing_key()
-        if signing_key is None:
+        signing_key = None if config.feed_format == LEGACY else self._load_signing_key()
+        if signing_key is None and config.feed_format != LEGACY:
             return
         prepared_revocations = mark_revoked(self._revocations)
         if prepared_revocations != self._revocations:
@@ -2684,12 +2824,16 @@ class LicenseAdminWindow(QMainWindow):
                 return
         publish_context = self._local_sync_context(context.target)
         tombstones = self._local_tombstones()
+        disabled_hwids = self._legacy_feed().disabled_hwids
         issuer = self._settings.issuer
         audience = self._settings.audience
         minimum_revision = self._minimum_manifest_revision(context.target)
         self._set_pending_sync_badge()
 
         def operation() -> RemoteSnapshot:
+            arguments: dict[str, Any] = {}
+            if config.feed_format == LEGACY:
+                arguments["disabled_hwids"] = disabled_hwids
             return self._sheet_client(config).publish_records(
                 records,
                 tombstones=tombstones,
@@ -2699,6 +2843,7 @@ class LicenseAdminWindow(QMainWindow):
                 expected_revision=reviewed.revision,
                 expected_digest=reviewed.digest,
                 minimum_revision=minimum_revision,
+                **arguments,
             )
 
         def complete(remote: Any) -> None:
@@ -2710,11 +2855,17 @@ class LicenseAdminWindow(QMainWindow):
                 return
             manifest = remote.manifest
             if manifest is None:
-                raise RuntimeError("Published Sheet returned no verified manifest.")
+                if config.feed_format != LEGACY or remote.revision is None or not remote.guard_matches_data:
+                    raise RuntimeError("Published Sheet returned no verified publication.")
+                revision = remote.revision.generation
+                published_at = datetime.now(timezone.utc)
+            else:
+                revision = manifest.revision
+                published_at = manifest.generated_at
             published_revocations = mark_published(
                 self._revocations,
-                revision=manifest.revision,
-                published_at=manifest.generated_at,
+                revision=revision,
+                published_at=published_at,
             )
             acknowledged = self._commit_license_state(
                 RecordTransaction.sorted_records(records),
@@ -2730,7 +2881,7 @@ class LicenseAdminWindow(QMainWindow):
                         "sheet.published",
                         licenses=len(records),
                         revoked=len(tombstones),
-                        revision=manifest.revision,
+                        revision=revision,
                     )
                 )
             else:
@@ -2939,6 +3090,10 @@ class LicenseAdminWindow(QMainWindow):
         ):
             action.setEnabled(idle)
         self.export_action.setEnabled(idle and writable)
+        self.revocation_history_action.setEnabled(idle)
+        if hasattr(self, "publish_button"):
+            self.publish_button.setEnabled(self.push_action.isEnabled())
+            self._refresh_publication_panel()
         if hasattr(self, "project_combo"):
             self.project_combo.setEnabled(idle)
             self.primary_action_button.setEnabled(idle and writable)

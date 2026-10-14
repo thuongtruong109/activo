@@ -215,7 +215,44 @@ không cung cấp conditional write cho chỉnh sửa thủ công của collabor
 vậy CAS của ứng dụng bảo vệ các writer License Manager tương thích; nên giới hạn
 quyền sửa Sheet và tránh chỉnh trực tiếp worksheet đích trong lúc publish.
 
-### Thu hồi license và signed feed v2
+### Publish cho client hai cột
+
+Trong **Cài đặt → Google Sheets → Định dạng publish**, mặc định là
+**Hai cột: HWID / JWT Token** cho client hiện tại. Project cũ chưa lưu lựa chọn
+định dạng cũng dùng mặc định này; preview luôn hiển thị đích và định dạng trước
+khi ghi. Nếu Sheet đang là v2, lần publish tiếp theo có xác nhận chuyển về hai
+cột và dọn dữ liệu v2 ở worksheet đích.
+
+- **Thu hồi** xóa token khỏi snapshot license hoạt động, nhưng giữ hàng thiết
+  bị trong bảng chính với HWID, tên đã lưu và token trống. Trạng thái là
+  **Đã thu hồi · chờ publish** đến khi publish được xác nhận, sau đó là
+  **Đã thu hồi**. Có thể tìm kiếm, lọc trạng thái và xem chi tiết cả sau khi
+  khởi động lại. Sau publish, Sheet giữ HWID với ô JWT Token trống.
+- **Xóa thiết bị…** bỏ hàng HWID/token khỏi dữ liệu được publish. Có thể dùng
+  từ menu license, chuột phải bản ghi hoặc danh sách thu hồi; đây là thao tác
+  bỏ hàng thiết bị khỏi bảng chính, kể cả khi thiết bị đã thu hồi.
+- Cả hai thao tác giữ lịch sử local và backup; xóa hàng Sheet không phải xóa
+  mọi bản sao dữ liệu.
+- Token đã cache chỉ bị chặn nếu client cập nhật và thực thi trạng thái Sheet
+  hiện tại. Xóa token hoặc ký token hết hạn không tự thay đổi token cũ đã nhận.
+
+Màn hình chính luôn có nút **Publish** cạnh trạng thái. Sau tạo/sửa/thu hồi/xóa,
+khối **Thay đổi chưa publish** hiện nút **Publish thay đổi…** và số yêu cầu
+thu hồi/xóa chưa được xác nhận. **Danh sách thu hồi** cho phép tìm tên/HWID/JTI,
+xem trạng thái, xóa hàng thiết bị đã thu hồi và publish ngay. Nút bị khóa khi
+đang chạy; hủy preview/lỗi mạng không làm mất thông báo chờ publish.
+
+Publish vẫn dùng staging, kiểm tra xung đột và đọc lại toàn bộ dữ liệu trước
+khi báo **Đã đồng bộ**. Worksheet được định dạng cột và cắt phần hiển thị token
+tự động trong cùng batch publish; không cần vào menu để format riêng. Marker
+đồng bộ nội bộ nằm trong worksheet ẩn, không thêm cột vào dữ liệu client.
+Export theo định dạng đang chọn. Hai cột không có manifest/freshness 7 ngày.
+
+### Signed feed v2 cho client tương thích
+
+Chỉ chọn **Feed v2 đã ký** khi client hỗ trợ năm cột và manifest. Với chế độ này,
+metadata thu hồi phải được giữ trong feed, kể cả khi bỏ thiết bị khỏi danh sách
+license; xóa tombstone có thể khiến token cũ được chấp nhận trở lại.
 
 Thu hồi không còn đồng nghĩa với xóa một dòng local. Mỗi license đi qua trạng
 thái **Active → Revocation pending → Revoked — publish pending → Published**:

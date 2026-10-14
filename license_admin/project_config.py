@@ -12,6 +12,7 @@ from typing import Any, cast
 from issue_license import LicenseIssueError
 from license_admin.google_sheets import extract_spreadsheet_id
 from license_admin.settings import AdminSettings
+from license_admin.feed_format import validate_feed_format
 
 
 PORTABLE_CONFIG_SCHEMA_VERSION = 1
@@ -28,6 +29,7 @@ def _settings_document(settings: AdminSettings) -> dict[str, Any]:
             "public_csv_url": settings.public_csv_url,
             "issuer": settings.issuer,
             "audience": settings.audience,
+            "feed_format": settings.feed_format,
         },
     }
 
@@ -128,4 +130,5 @@ def import_project_config(path: Path, current: AdminSettings) -> AdminSettings:
         public_csv_url=public_csv_url,
         issuer=_text(document, "issuer", required=True),
         audience=_text(document, "audience", required=True),
+        feed_format=validate_feed_format(_text(document, "feed_format", default=current.feed_format)),
     )

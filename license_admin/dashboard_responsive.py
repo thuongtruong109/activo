@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLayout
+from PySide6.QtWidgets import QBoxLayout, QGridLayout, QHBoxLayout, QLayout
 
 from license_admin.localization import text
 from license_admin.window_chrome import APP_HEADER_HEIGHT
@@ -28,7 +28,7 @@ def _clear_grid(layout: QGridLayout) -> None:
 class DashboardResponsiveController:
     def __init__(self, window: LicenseAdminWindow) -> None:
         self.window = window
-        self._signature: tuple[bool, bool, int, bool] | None = None
+        self._signature: tuple[bool, bool, int, bool, bool] | None = None
         _clear_grid(window.top_bar_layout)
         self._primary_row = QHBoxLayout()
         self._utility_row = QHBoxLayout()
@@ -57,7 +57,8 @@ class DashboardResponsiveController:
         narrow_header = available < max(760, header_width)
         columns = 2 if available < 880 else 4
         narrow_filters = available < 740
-        signature = (collapsed, narrow_header, columns, narrow_filters)
+        compact_sync = available < 540
+        signature = (collapsed, narrow_header, columns, narrow_filters, compact_sync)
         if signature == self._signature and not force:
             return
         self._signature = signature
@@ -97,6 +98,9 @@ class DashboardResponsiveController:
                 self._primary_row.addWidget(widget, 0, alignment)
         layout.setVerticalSpacing(4 if narrow_header else 0)
         window.top_bar.setFixedHeight(APP_HEADER_HEIGHT + (36 if narrow_header else 0))
+        window.table_state_panel.actions_layout.setDirection(
+            QBoxLayout.Direction.TopToBottom if compact_sync else QBoxLayout.Direction.LeftToRight
+        )
 
         _clear_grid(window.metrics_layout)
         for index, card in enumerate(window.metric_cards):
@@ -108,10 +112,17 @@ class DashboardResponsiveController:
         _clear_grid(filters)
         if narrow_filters:
             filters.addWidget(window.table_filters, 0, 0, 1, 3)
-            filters.addWidget(window.visible_label, 1, 0)
-            filters.addWidget(window.sync_badge, 1, 2, Qt.AlignmentFlag.AlignRight)
+            if compact_sync:
+                filters.addWidget(window.visible_label, 1, 0, 1, 3)
+                filters.addWidget(window.sync_controls, 2, 0, 1, 3, Qt.AlignmentFlag.AlignRight)
+            else:
+                filters.addWidget(window.visible_label, 1, 0)
+                filters.addWidget(window.sync_controls, 1, 2, Qt.AlignmentFlag.AlignRight)
         else:
             filters.addWidget(window.table_filters, 0, 0)
             filters.addWidget(window.visible_label, 0, 1)
-            filters.addWidget(window.sync_badge, 0, 2)
+            filters.addWidget(window.sync_controls, 0, 2)
         filters.setColumnStretch(0, 1)
+        filters.invalidate()
+        filters.activate()
+        window.table_header.updateGeometry()

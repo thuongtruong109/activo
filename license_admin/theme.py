@@ -126,6 +126,12 @@ QFrame#dataStateBanner {
     border: 1px solid #1d5267;
     border-radius: 9px;
 }
+QFrame#publicationPanel {
+    background: #0c2431;
+    border: 1px solid #1d5267;
+    border-radius: 9px;
+}
+QLabel#publicationTitle { font-weight: 700; }
 QFrame#dataStateBanner[state="corrupted"],
 QFrame#dataStateBanner[state="wrong_key"],
 QFrame#dataStateBanner[state="permission_denied"],
@@ -826,6 +832,8 @@ QLabel#metricTitle, QLabel#metricNote, QLabel#muted,
 QLabel#busyStatus, QLabel#tableStateBody, QLabel#operationStep,
 QLabel#operationElapsed {{ color: {palette.text_muted}; }}
 QFrame#operationBar {{ background: {palette.surface}; border-bottom: 1px solid {palette.text_subtle}; }}
+QFrame#publicationPanel {{ background: {palette.surface}; border: 1px solid {palette.text_subtle}; }}
+QLabel#publicationBody {{ color: {palette.text_muted}; }}
 QLabel#informationLanguageNotice {{ color: {palette.link}; font-weight: 600; }}
 QScrollArea#responsiveScroll, QScrollArea#dashboardScroll,
 QScrollArea#sidebarScroll {{ background: transparent; border: 0; }}
@@ -891,6 +899,7 @@ def status_text_color(mode: str, status: str) -> str:
         "expired": palette.status_expired,
         "future": palette.status_future,
         "invalid": palette.status_invalid,
+        "revoked": palette.status_expired,
     }.get(status, palette.text_muted)
 
 

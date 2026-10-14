@@ -40,6 +40,9 @@ from license_admin.feed_manifest import (
     verify_feed,
 )
 from license_admin.service_account_store import load_service_account
+from license_admin.feed_format import LEGACY, SIGNED_V2, parse_publication_csv, publication_csv, publication_digest
+from license_admin.legacy_publish import publish_legacy
+from license_admin.sheet_presentation import sheet_format_requests
 
 
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
@@ -72,6 +75,7 @@ class RemoteSnapshot:
     manifest_token: str = ""
     manifest: FeedManifest | None = None
     content_digest: str = ""
+    disabled_hwids: tuple[str, ...] = ()
 
     @property
     def guard_matches_data(self) -> bool:
@@ -91,6 +95,7 @@ class GoogleSheetsConfig:
     worksheet: str = "Signed"
     credentials_path: Path | None = None
     public_csv_url: str = ""
+    feed_format: str = SIGNED_V2
 
     @property
     def browser_url(self) -> str:
@@ -291,11 +296,16 @@ class GoogleSheetsClient:
         return normalized
 
     def _read_feed_from_title(self, title: str) -> FeedDocument:
+        rows = self._read_rows(title, "A:E")
+        if not rows or not rows[0] or rows[0][0] != "entry_type":
+            for row in rows:
+                while len(row) > 2 and not row[-1].strip():
+                    row.pop()
         output = io.StringIO(newline="")
         csv.writer(output, lineterminator="\n").writerows(
-            [row[:5] for row in self._read_rows(title, "A:E")]
+            rows
         )
-        return parse_feed_csv(output.getvalue(), allow_legacy=True)
+        return parse_publication_csv(output.getvalue())
 
     def _read_records_from_title(self, title: str) -> list[LicenseRecord]:
         return list(self._read_feed_from_title(title).records)
@@ -354,7 +364,7 @@ class GoogleSheetsClient:
         digest = (
             feed_digest(feed)
             if feed.manifest_token
-            else records_digest(records)
+            else publication_digest(feed)
         )
         revision = self._read_remote_revision(properties, target_sheet_id)
         return RemoteSnapshot(
@@ -369,7 +379,8 @@ class GoogleSheetsClient:
             content_digest=publication_content_digest(
                 feed.records,
                 feed.tombstones,
-            ),
+            ) if feed.manifest_token else publication_digest(feed),
+            disabled_hwids=feed.disabled_hwids,
         )
 
     @staticmethod
@@ -442,9 +453,10 @@ class GoogleSheetsClient:
 
     def _write_feed(self, title: str, feed: FeedDocument) -> None:
         values = list(
-            csv.reader(io.StringIO(serialize_feed_csv(feed), newline=""), strict=True)
+            csv.reader(io.StringIO(publication_csv(feed), newline=""), strict=True)
         )
-        cell_range = f"{self._quoted_title(title)}!A1:E{len(values)}"
+        end_column = "E" if feed.manifest_token else "B"
+        cell_range = f"{self._quoted_title(title)}!A1:{end_column}{len(values)}"
         self._request(
             "PUT",
             self._values_url(cell_range),
@@ -493,6 +505,8 @@ class GoogleSheetsClient:
         digest: str,
         operation_id: str,
     ) -> None:
+        # Formatting/filtering needs a header and at least one body row.
+        stage_row_count = max(2, stage_row_count)
         requests_payload: list[dict[str, Any]] = []
         if expected.revision is not None:
             requests_payload.append(
@@ -592,6 +606,11 @@ class GoogleSheetsClient:
                 {"deleteSheet": {"sheetId": stage_sheet_id}},
             ]
         )
+        stage_cleanup = requests_payload.pop()
+        requests_payload.extend(sheet_format_requests(expected.target_sheet_id,
+                                                       max(expected.target_row_count, stage_row_count),
+                                                       self.config.feed_format))
+        requests_payload.append(stage_cleanup)
         self._batch_update(requests_payload)
 
     @staticmethod
@@ -623,18 +642,24 @@ class GoogleSheetsClient:
         records: list[LicenseRecord] | tuple[LicenseRecord, ...],
         *,
         tombstones: tuple[FeedTombstone, ...],
-        signing_key: rsa.RSAPrivateKey,
+        signing_key: rsa.RSAPrivateKey | None,
         issuer: str,
         audience: str,
         expected_revision: RemoteRevision | None,
         expected_digest: str,
         freshness: timedelta = DEFAULT_FRESHNESS,
         minimum_revision: int = 0,
+        disabled_hwids: tuple[str, ...] = (),
     ) -> RemoteSnapshot:
         """Sign, stage, atomically compare-and-swap, and verify one feed."""
         ordered = tuple(
             sorted(records, key=lambda item: (item.username.casefold(), item.hwid))
         )
+        if self.config.feed_format == LEGACY:
+            return publish_legacy(self, ordered, disabled_hwids,
+                                  expected_revision=expected_revision, expected_digest=expected_digest)
+        if signing_key is None:
+            raise LicenseIssueError("Signed v2 publication requires a signing key.")
         reviewed = self.read_snapshot()
         self._assert_expected_snapshot(reviewed, expected_revision, expected_digest)
         next_remote_revision = (
@@ -777,94 +802,10 @@ class GoogleSheetsClient:
 
     def format_worksheet(self) -> None:
         sheet_id, row_count = self._worksheet_properties()
-        grid_range = {
-            "sheetId": sheet_id,
-            "startColumnIndex": 0,
-            "endColumnIndex": len(FEED_COLUMNS),
-        }
-        header_range = dict(grid_range, startRowIndex=0, endRowIndex=1)
-        body_range = dict(grid_range, startRowIndex=1, endRowIndex=max(2, row_count))
-        requests_payload: list[dict[str, Any]] = [
-            {
-                "updateSheetProperties": {
-                    "properties": {
-                        "sheetId": sheet_id,
-                        "gridProperties": {"frozenRowCount": 1},
-                    },
-                    "fields": "gridProperties.frozenRowCount",
-                }
-            },
-            {
-                "repeatCell": {
-                    "range": header_range,
-                    "cell": {
-                        "userEnteredFormat": {
-                            "backgroundColor": {"red": 0.92, "green": 0.34, "blue": 0.05},
-                            "textFormat": {
-                                "bold": True,
-                                "foregroundColor": {"red": 1, "green": 1, "blue": 1},
-                            },
-                            "horizontalAlignment": "CENTER",
-                        }
-                    },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-                }
-            },
-            {
-                "repeatCell": {
-                    "range": body_range,
-                    "cell": {
-                        "userEnteredFormat": {
-                            "numberFormat": {"type": "TEXT", "pattern": "@"},
-                            "verticalAlignment": "MIDDLE",
-                            "wrapStrategy": "CLIP",
-                        }
-                    },
-                    "fields": "userEnteredFormat(numberFormat,verticalAlignment,wrapStrategy)",
-                }
-            },
-            {
-                "updateDimensionProperties": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "COLUMNS",
-                        "startIndex": 0,
-                        "endIndex": 1,
-                    },
-                    "properties": {"pixelSize": 440},
-                    "fields": "pixelSize",
-                }
-            },
-            {
-                "updateDimensionProperties": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "COLUMNS",
-                        "startIndex": 1,
-                        "endIndex": 2,
-                    },
-                    "properties": {"pixelSize": 600},
-                    "fields": "pixelSize",
-                }
-            },
-            {
-                "setBasicFilter": {
-                    "filter": {
-                        "range": {
-                            "sheetId": sheet_id,
-                            "startRowIndex": 0,
-                            "endRowIndex": max(2, row_count),
-                            "startColumnIndex": 0,
-                            "endColumnIndex": len(FEED_COLUMNS),
-                        }
-                    }
-                }
-            },
-        ]
-        self._batch_update(requests_payload)
+        self._batch_update(sheet_format_requests(sheet_id, row_count, self.config.feed_format))
 
 
-def download_public_feed(url: str) -> FeedDocument:
+def download_public_feed(url: str, *, allow_legacy: bool = False) -> FeedDocument:
     if not url.strip().startswith("https://"):
         raise LicenseIssueError("Public CSV URL must use HTTPS.")
     try:
@@ -872,7 +813,7 @@ def download_public_feed(url: str) -> FeedDocument:
         response.raise_for_status()
     except requests.RequestException as exc:
         raise LicenseIssueError(f"Unable to download the published CSV: {exc}") from exc
-    return parse_feed_csv(response.text)
+    return parse_publication_csv(response.text) if allow_legacy else parse_feed_csv(response.text)
 
 
 def download_public_records(url: str) -> list[LicenseRecord]:

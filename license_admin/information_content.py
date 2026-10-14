@@ -49,12 +49,12 @@ _CONTENT: dict[str, dict[str, InformationContent]] = {
     "policy": {
         "en": InformationContent(
             "Privacy policy",
-            "Updated 4 October 2026. This notice explains readable token data, publication destinations, retention, clipboard use and how to request corrections or removal.",
+            "Updated 14 October 2026. This notice explains readable token data, publication destinations, retention, clipboard use and how to request corrections or removal.",
             PRIVACY_SECTIONS["en"],
         ),
         "vi": InformationContent(
             "Chính sách riêng tư & minh bạch",
-            "Cập nhật 04/10/2026. Thông báo giải thích dữ liệu đọc được trong token, nơi publish, thời gian lưu, clipboard và cách yêu cầu cập nhật hoặc xóa dữ liệu.",
+            "Cập nhật 14/10/2026. Thông báo giải thích dữ liệu đọc được trong token, nơi publish, thời gian lưu, clipboard và cách yêu cầu cập nhật hoặc xóa dữ liệu.",
             PRIVACY_SECTIONS["vi"],
         ),
     },

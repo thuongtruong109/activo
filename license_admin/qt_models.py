@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unicodedata
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 
 from PySide6.QtCore import (
     QAbstractTableModel,
@@ -16,7 +16,9 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor
 
 from license_admin.domain import LicenseRecord, LicenseStatus
+from license_admin.device_rows import DeviceRow, build_device_rows
 from license_admin.localization import text
+from license_admin.revocations import RevocationEntry
 from license_admin.theme import normalize_theme, status_text_color
 
 
@@ -26,6 +28,7 @@ STATUS_LABEL_KEYS = {
     LicenseStatus.EXPIRED: "status.expired",
     LicenseStatus.FUTURE: "status.future",
     LicenseStatus.INVALID: "status.invalid",
+    LicenseStatus.REVOKED: "status.revoked",
 }
 
 def normalize_search_text(value: str) -> str:
@@ -52,28 +55,41 @@ class LicenseTableModel(QAbstractTableModel):
 
     def __init__(self, theme_mode: str = "dark") -> None:
         super().__init__()
-        self._records: list[LicenseRecord] = []
+        self._rows: list[DeviceRow] = []
+        self._revoked_hwids: frozenset[str] = frozenset()
         self._theme_mode = normalize_theme(theme_mode)
 
     @property
     def records(self) -> list[LicenseRecord]:
-        return list(self._records)
+        return [row.record for row in self._rows]
 
-    def set_records(self, records: list[LicenseRecord]) -> None:
+    def set_records(
+        self, records: list[LicenseRecord], revocations: Iterable[RevocationEntry] = (),
+    ) -> None:
+        rows = build_device_rows(records, revocations)
         self.beginResetModel()
-        self._records = list(records)
+        self._rows = rows
+        self._revoked_hwids = frozenset(
+            row.record.hwid for row in rows if row.revocation is not None
+        )
         self.endResetModel()
 
     def record_at(self, row: int) -> LicenseRecord | None:
-        if 0 <= row < len(self._records):
-            return self._records[row]
+        if 0 <= row < len(self._rows):
+            return self._rows[row].record
         return None
+
+    def status_at(self, row: int) -> LicenseStatus | None:
+        return self._rows[row].status() if 0 <= row < len(self._rows) else None
+
+    def is_revoked(self, hwid: str) -> bool:
+        return hwid in self._revoked_hwids
 
     def rowCount(
         self,
         parent: QModelIndex | QPersistentModelIndex = QModelIndex(),
     ) -> int:
-        return 0 if parent.isValid() else len(self._records)
+        return 0 if parent.isValid() else len(self._rows)
 
     def columnCount(
         self,
@@ -104,14 +120,18 @@ class LicenseTableModel(QAbstractTableModel):
         index: QModelIndex | QPersistentModelIndex,
         role: int = int(Qt.ItemDataRole.DisplayRole),
     ) -> Any:
-        if not index.isValid() or not 0 <= index.row() < len(self._records):
+        if not index.isValid() or not 0 <= index.row() < len(self._rows):
             return None
-        record = self._records[index.row()]
-        status = record.status()
+        row = self._rows[index.row()]
+        record = row.record
+        status = row.status()
+        status_label = text(
+            "status.revoked_pending" if row.awaiting_publication else STATUS_LABEL_KEYS[status]
+        )
         values: tuple[Any, ...] = (
             record.username or "—",
             record.hwid,
-            text(STATUS_LABEL_KEYS[status]),
+            status_label,
             self._format_datetime(record.expires_at),
             self._remaining(record),
             self._format_datetime(record.issued_at),
@@ -135,6 +155,8 @@ class LicenseTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.ForegroundRole and index.column() == 2:
             return QColor(status_text_color(self._theme_mode, status.value))
         if role == Qt.ItemDataRole.ToolTipRole:
+            if index.column() == 2 and row.revocation is not None:
+                return status_label
             if record.parse_error:
                 return record.parse_error
             if index.column() == 1:
@@ -160,10 +182,10 @@ class LicenseTableModel(QAbstractTableModel):
 
     def retranslate(self) -> None:
         self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 6)
-        if self._records:
+        if self._rows:
             self.dataChanged.emit(
                 self.index(0, 0),
-                self.index(len(self._records) - 1, 6),
+                self.index(len(self._rows) - 1, 6),
                 [int(Qt.ItemDataRole.DisplayRole)],
             )
 
@@ -172,10 +194,10 @@ class LicenseTableModel(QAbstractTableModel):
         if normalized == self._theme_mode:
             return
         self._theme_mode = normalized
-        if self._records:
+        if self._rows:
             self.dataChanged.emit(
                 self.index(0, 2),
-                self.index(len(self._records) - 1, 2),
+                self.index(len(self._rows) - 1, 2),
                 [int(Qt.ItemDataRole.ForegroundRole)],
             )
 
@@ -209,7 +231,7 @@ class LicenseFilterModel(QSortFilterProxyModel):
         record = source.record_at(source_row)
         if record is None:
             return False
-        if self._status is not None and record.status() is not self._status:
+        if self._status is not None and source.status_at(source_row) is not self._status:
             return False
         if not self._query:
             return True

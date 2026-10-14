@@ -132,6 +132,7 @@ class FeedDocument:
     tombstones: tuple[FeedTombstone, ...]
     manifest_token: str = ""
     manifest: FeedManifest | None = None
+    disabled_hwids: tuple[str, ...] = ()
 
     def is_revoked(self, *, hwid: str, jti: str | None = None) -> bool:
         normalized_hwid = normalize_hwid(hwid)

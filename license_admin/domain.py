@@ -32,6 +32,7 @@ class LicenseStatus(str, Enum):
     EXPIRED = "expired"
     FUTURE = "future"
     INVALID = "invalid"
+    REVOKED = "revoked"
 
 
 @dataclass(frozen=True, slots=True)

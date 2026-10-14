@@ -33,8 +33,11 @@ class RevocationEntry:
     phase: RevocationPhase
     published_at: datetime | None = None
     published_revision: int | None = None
+    remove_device: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.remove_device, bool):
+            raise LicenseIssueError("Revocation removal flag must be a boolean.")
         if not isinstance(self.hwid, str):
             raise LicenseIssueError("Revocation HWID must be text.")
         if not isinstance(self.username, str):
@@ -129,6 +132,38 @@ def mark_revoked(
     )
 
 
+def request_device_removal(
+    entries: Iterable[RevocationEntry], record: LicenseRecord,
+) -> tuple[RevocationEntry, ...]:
+    existing = {entry.hwid: entry for entry in entries}
+    if record.hwid not in existing:
+        existing = {entry.hwid: entry for entry in request_revocation(existing.values(), record)}
+    existing[record.hwid] = replace(
+        existing[record.hwid], remove_device=True, phase=RevocationPhase.PENDING,
+        published_at=None, published_revision=None,
+    )
+    return tuple(sorted(existing.values(), key=lambda entry: entry.hwid))
+
+
+def merge_disabled_hwids(
+    entries: tuple[RevocationEntry, ...], hwids: tuple[str, ...],
+    records: Iterable[LicenseRecord], *, revision: int | None,
+) -> tuple[RevocationEntry, ...]:
+    """Record legacy blank-token rows without discarding pending local intent."""
+    existing = {entry.hwid: entry for entry in entries}
+    names = {record.hwid: record.username for record in records}
+    now = datetime.now(timezone.utc)
+    for hwid in hwids:
+        if hwid in existing:
+            continue
+        existing[hwid] = RevocationEntry(
+            hwid=hwid, jti=None, username=names.get(hwid, ""), revoked_at=now,
+            phase=RevocationPhase.PUBLISHED if revision else RevocationPhase.PENDING,
+            published_revision=revision, published_at=now if revision else None,
+        )
+    return tuple(sorted(existing.values(), key=lambda entry: entry.hwid))
+
+
 def mark_published(
     entries: Iterable[RevocationEntry],
     *,
@@ -171,6 +206,7 @@ def merge_published_tombstones(
             phase=RevocationPhase.PUBLISHED,
             published_at=timestamp,
             published_revision=revision,
+            remove_device=current.remove_device if current is not None else False,
         )
     return tuple(sorted(merged.values(), key=lambda item: item.hwid))
 
@@ -261,6 +297,7 @@ class RevocationRepository:
                 else None
             ),
             "published_revision": entry.published_revision,
+            "remove_device": entry.remove_device,
         }
 
     @staticmethod
@@ -300,4 +337,5 @@ class RevocationRepository:
             phase=phase,
             published_at=published_at,
             published_revision=published_revision,
+            remove_device=raw.get("remove_device", False),
         )

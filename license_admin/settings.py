@@ -21,6 +21,7 @@ from license_admin.key_store import (
     migrate_legacy_private_key,
 )
 from license_admin.key_identity import KeyIdentityStore
+from license_admin.feed_format import LEGACY, validate_feed_format
 
 
 APPLICATION_ROOT = (
@@ -94,6 +95,7 @@ class AdminSettings:
     issuer: str
     audience: str
     trusted_public_key_paths: tuple[Path, ...] = ()
+    feed_format: str = LEGACY
 
     def sheets_config(self) -> GoogleSheetsConfig:
         return GoogleSheetsConfig(
@@ -101,6 +103,7 @@ class AdminSettings:
             worksheet=self.worksheet,
             credentials_path=self.service_account_path,
             public_csv_url=self.public_csv_url,
+            feed_format=self.feed_format,
         )
 
 
@@ -188,6 +191,7 @@ class ProjectStore:
                 public_csv_url=settings.public_csv_url,
                 issuer=settings.issuer,
                 audience=settings.audience,
+                feed_format=settings.feed_format,
             )
             try:
                 self.save(settings)
@@ -267,6 +271,7 @@ class ProjectStore:
             "public_csv_url": settings.public_csv_url.strip(),
             "issuer": settings.issuer.strip(),
             "audience": settings.audience.strip(),
+            "feed_format": validate_feed_format(settings.feed_format),
         }
         if not document["name"] or not document["issuer"] or not document["audience"]:
             raise LicenseIssueError(
@@ -363,4 +368,5 @@ class ProjectStore:
             public_csv_url=_optional_text(document, "public_csv_url"),
             issuer=_required_text(document, "issuer"),
             audience=_required_text(document, "audience"),
+            feed_format=validate_feed_format(_optional_text(document, "feed_format", LEGACY)),
         )

@@ -49,7 +49,7 @@ PRIVACY_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
         ),
         (
             "Feed contents and publication destinations",
-            "Export writes a signed CSV feed to the file you choose. Sync writes the feed to the configured Google Sheet, including temporary staging worksheets during publication. License rows contain HWID, token and JTI; revocation rows contain HWID, JTI when available and revoked_at. The readable signed manifest includes issuer, audience, schema, revision, generation/expiry times, record counts and content hashes. Exported files can be distributed wherever you place them. If its owner grants public access or publishes it to the web, a Sheet's feed may be readable through a public CSV URL, subject to account and sharing settings. License Admin does not enable Google's public sharing or Publish to web setting for you; the owner controls those settings.",
+            "Export writes a license CSV to the file you choose. Sync writes it to the configured Google Sheet, including temporary staging worksheets. In two-column mode, rows contain HWID and JWT Token; revocation keeps the HWID with a blank token, while Remove device omits its row after publication. Local action history, keys and backups are retained. Signed v2 mode additionally publishes entry_type, JTI, revoked_at and a readable signed manifest with issuer, audience, revision, times, counts and content hashes. Exported files can be distributed wherever you place them. If its owner grants public access or publishes it to the web, Sheet data may be readable through a public CSV URL, subject to account and sharing settings. License Admin does not enable public sharing or Publish to web for you.",
         ),
         (
             "Third-party services",
@@ -73,7 +73,7 @@ PRIVACY_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
         ),
         (
             "Transparency and notice changes",
-            "This notice describes the application's current behavior and was updated on 4 October 2026. We aim to make network actions explicit and update the notice when data handling materially changes. The operator remains responsible for choosing what customer information to place in tokens and for reviewing access to each publication destination.",
+            "This notice describes the application's current behavior and was updated on 14 October 2026. We aim to make network actions explicit and update the notice when data handling materially changes. The operator remains responsible for choosing what customer information to place in tokens and for reviewing access to each publication destination.",
         ),
     ),
     "vi": (
@@ -89,7 +89,7 @@ PRIVACY_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
         ),
         (
             "Nội dung feed và nơi publish",
-            "Thao tác xuất ghi feed CSV đã ký vào file bạn chọn. Đồng bộ ghi feed lên Google Sheet đã cấu hình, bao gồm worksheet staging tạm thời trong quá trình publish. Dòng license chứa HWID, token và JTI; dòng thu hồi chứa HWID, JTI nếu có và revoked_at. Manifest đã ký vẫn đọc được, gồm issuer, audience, schema, revision, thời điểm tạo/hết hạn, số bản ghi và hash nội dung. File export có thể được phân phối tại nơi bạn đưa lên. Nếu chủ sở hữu cấp quyền truy cập công khai hoặc publish Sheet lên web, feed có thể đọc được qua URL CSV công khai, tùy thiết lập tài khoản và chia sẻ. License Admin không tự bật quyền chia sẻ công khai hay Publish to web của Google; chủ sở hữu kiểm soát các thiết lập đó.",
+            "Thao tác xuất ghi CSV license vào file bạn chọn. Đồng bộ ghi lên Google Sheet đã cấu hình, gồm worksheet staging tạm thời. Chế độ hai cột chứa HWID và JWT Token; thu hồi giữ HWID với token trống, còn Xóa thiết bị bỏ hàng sau khi publish. Lịch sử thao tác local, key và backup vẫn được giữ. Chế độ v2 còn publish entry_type, JTI, revoked_at và manifest đã ký có thể đọc được, chứa issuer, audience, revision, thời gian, số bản ghi và hash. File export có thể được phân phối tại nơi bạn đưa lên. Nếu chủ sở hữu cấp quyền công khai hoặc publish Sheet lên web, dữ liệu có thể đọc qua URL CSV công khai, tùy thiết lập tài khoản/chia sẻ. License Admin không tự bật chia sẻ công khai hay Publish to web.",
         ),
         (
             "Dịch vụ bên thứ ba",
@@ -113,7 +113,7 @@ PRIVACY_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
         ),
         (
             "Minh bạch và cập nhật thông báo",
-            "Thông báo mô tả hành vi hiện tại của ứng dụng và được cập nhật ngày 04/10/2026. Chúng tôi hướng tới việc thể hiện rõ thao tác mạng và cập nhật thông báo khi cách xử lý dữ liệu thay đổi đáng kể. Người vận hành chịu trách nhiệm chọn thông tin khách hàng đưa vào token và kiểm tra quyền truy cập tại từng nơi publish.",
+            "Thông báo mô tả hành vi hiện tại của ứng dụng và được cập nhật ngày 14/10/2026. Chúng tôi hướng tới việc thể hiện rõ thao tác mạng và cập nhật thông báo khi cách xử lý dữ liệu thay đổi đáng kể. Người vận hành chịu trách nhiệm chọn thông tin khách hàng đưa vào token và kiểm tra quyền truy cập tại từng nơi publish.",
         ),
     ),
 }

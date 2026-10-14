@@ -134,6 +134,8 @@ class LicenseAdminUiTests(unittest.TestCase):
                 serialization.PublicFormat.SubjectPublicKeyInfo,
             )
         )
+        profile = replace(profile, feed_format="signed-v2")
+        cls.project_store.save(profile)
         cls.qsettings = QSettings(
             str(root / "settings.ini"),
             QSettings.Format.IniFormat,
@@ -274,12 +276,12 @@ class LicenseAdminUiTests(unittest.TestCase):
                 {20},
             )
             self.assertLess(
-                window.window_controls.close_button.geometry().left(),
-                window.window_controls.minimize_button.geometry().left(),
-            )
-            self.assertLess(
                 window.window_controls.minimize_button.geometry().left(),
                 window.window_controls.maximize_button.geometry().left(),
+            )
+            self.assertLess(
+                window.window_controls.maximize_button.geometry().left(),
+                window.window_controls.close_button.geometry().left(),
             )
             content_margins = window.content_surface.layout().contentsMargins()
             self.assertEqual(

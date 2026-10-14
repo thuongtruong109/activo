@@ -28,6 +28,7 @@ class ProjectConfigTests(unittest.TestCase):
                 public_csv_url="https://example.test/licenses.csv",
                 issuer="portable-issuer",
                 audience="portable-audience",
+                feed_format="signed-v2",
             )
             exported = export_project_config(source, root / "settings.json")
             beta = store.create("Beta")
@@ -41,6 +42,7 @@ class ProjectConfigTests(unittest.TestCase):
             self.assertEqual(imported.public_key_path, beta.public_key_path)
             self.assertEqual(imported.local_csv_path, beta.local_csv_path)
             self.assertEqual(imported.service_account_path, beta.service_account_path)
+            self.assertEqual(imported.feed_format, "signed-v2")
             document = json.loads(exported.read_text(encoding="utf-8"))
             self.assertNotIn("private_key", document["project"])
             self.assertNotIn("service_account", document["project"])

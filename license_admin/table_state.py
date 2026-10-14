@@ -7,6 +7,7 @@ from collections.abc import Callable
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame,
+    QBoxLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -54,16 +55,17 @@ class TableStatePanel(QFrame):
         self.body_label.setMaximumWidth(560)
         layout.addWidget(self.body_label, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        actions = QHBoxLayout()
+        actions = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.actions_layout = actions
         actions.setSpacing(8)
         actions.addStretch(1)
         self.primary_button = QPushButton()
         self.primary_button.setObjectName("primaryButton")
         self.primary_button.clicked.connect(self._run_primary)
-        actions.addWidget(self.primary_button)
+        actions.addWidget(self.primary_button, alignment=Qt.AlignmentFlag.AlignHCenter)
         self.secondary_button = QPushButton()
         self.secondary_button.clicked.connect(self._run_secondary)
-        actions.addWidget(self.secondary_button)
+        actions.addWidget(self.secondary_button, alignment=Qt.AlignmentFlag.AlignHCenter)
         actions.addStretch(1)
         layout.addLayout(actions)
         layout.addStretch(1)

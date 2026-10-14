@@ -9,6 +9,7 @@ from PySide6.QtCore import QDate, QSize, Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDateEdit,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -32,7 +33,7 @@ from license_admin.icons import svg_icon
 from license_admin.key_import_dialog import KeyImportDialog
 from license_admin.key_store import KeyPasswordRequiredError, inspect_key_pair
 from license_admin.localization import text
-from license_admin.responsive import fit_window_to_screen, responsive_form, scroll_container
+from license_admin.responsive import fit_window_to_screen, responsive_form, scroll_container, wrap_label
 from license_admin.service_account_import_dialog import ServiceAccountImportDialog
 from license_admin.service_account_store import inspect_service_account
 from license_admin.settings import AdminSettings, ProjectStore
@@ -42,6 +43,7 @@ from license_admin.window_chrome import (
     FramelessTabHeader,
     enable_frameless_window,
 )
+from license_admin.feed_format import LEGACY, SIGNED_V2
 
 
 class LicenseEditorDialog(QDialog):
@@ -256,6 +258,14 @@ class SettingsDialog(QDialog):
         google_form.insertRow(0, text("settings.spreadsheet"), self.sheet_id_edit)
         google_form.insertRow(1, text("settings.worksheet"), self.worksheet_edit)
         google_form.insertRow(2, text("settings.public_url"), self.public_url_edit)
+        self.feed_format_combo = QComboBox()
+        self.feed_format_combo.addItem(text("settings.format_legacy"), LEGACY)
+        self.feed_format_combo.addItem(text("settings.format_v2"), SIGNED_V2)
+        self.feed_format_combo.setCurrentIndex(self.feed_format_combo.findData(values.feed_format))
+        google_form.insertRow(3, text("settings.feed_format"), self.feed_format_combo)
+        format_note = QLabel(text("settings.format_note"))
+        wrap_label(format_note)
+        google_form.insertRow(4, "", format_note)
         note = QLabel(
             text("settings.google_note")
         )
@@ -566,6 +576,7 @@ class SettingsDialog(QDialog):
             public_csv_url=self.public_url_edit.text().strip(),
             issuer=self.issuer_edit.text().strip(),
             audience=self.audience_edit.text().strip(),
+            feed_format=str(self.feed_format_combo.currentData()),
         )
 
 
@@ -596,6 +607,7 @@ class RecordDetailsDialog(QDialog):
         copy_token = buttons.addButton(
             text("details.copy_token"), QDialogButtonBox.ButtonRole.ActionRole
         )
+        copy_token.setEnabled(bool(record.token))
         copy_hwid.setIcon(svg_icon("copy", 16))
         copy_token.setIcon(svg_icon("copy", 16))
         buttons.button(QDialogButtonBox.StandardButton.Close).setIcon(
